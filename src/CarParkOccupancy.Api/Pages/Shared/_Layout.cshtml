@@ -1,0 +1,46 @@
+@inject CarParkOccupancy.Api.Ui.CarParkDataSource DataSource
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>@(ViewData["Title"] ?? "停車場佔用預測")</title>
+    <link rel="icon" href="~/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
+</head>
+<body>
+    <a class="skip" href="#content">跳到內容 Skip to content</a>
+    <header class="site-header">
+        <div class="wrap header-inner">
+            <a class="brand" href="/">
+                <span class="brand-mark" aria-hidden="true">P</span>
+                <span>
+                    <span class="brand-zh">停車場佔用預測</span>
+                    <span class="brand-en">Car park occupancy</span>
+                </span>
+            </a>
+            <p class="header-note">net10.0 · 未來 1–6 小時 · Next 1–6 hours</p>
+        </div>
+    </header>
+    <main id="content" class="wrap">
+        @if (DataSource.UsingSampleSnapshots)
+        {
+            <section class="banner banner-sample" role="status" data-testid="sample-banner">
+                <h2>示範數據 · Sample snapshots</h2>
+                <p>
+                    呢個 Development 預覽用產生出嚟嘅快照，冇讀 SQL Server。
+                    This Development preview does not read SQL Server.
+                    關閉 <code>CarParkData:UseSampleSnapshots</code> 並設定 <code>ConnectionStrings:CarParkDb</code> 就會用真實資料。
+                </p>
+            </section>
+        }
+        @RenderBody()
+    </main>
+    <footer class="site-footer">
+        <div class="wrap">
+            <p>佔用率刻度 0–100（0 空，100 滿）。Occupancy is a percent of capacity, not a 0–1 fraction. Loaded from <code>/api/carparks</code>.</p>
+        </div>
+    </footer>
+    <script src="~/js/site.js" asp-append-version="true"></script>
+</body>
+</html>

@@ -1,0 +1,27 @@
+@model PredictionPageModel
+@if (Model.DataUnavailable)
+{
+    <section class="banner banner-warn" role="alert" data-testid="data-unavailable">
+        <h2>停車場資料暫時讀唔到 · Car park data is unavailable</h2>
+        <p>
+            預測 API 回傳 HTTP 503。未設定資料庫時，請設定
+            <code>ConnectionStrings:CarParkDb</code>
+            （user secrets，或者環境變數 <code>ConnectionStrings__CarParkDb</code>）。
+            頁面唔會顯示連線字串。
+            The prediction API returned HTTP 503 because occupancy snapshots could not be read.
+            Set ConnectionStrings:CarParkDb when SQL Server is not configured.
+            This page does not show the connection string.
+        </p>
+        @if (!string.IsNullOrWhiteSpace(Model.ErrorMessage))
+        {
+            <p class="detail">@Model.ErrorMessage</p>
+        }
+    </section>
+}
+else if (Model.ApiUnreachable)
+{
+    <section class="banner banner-warn" role="alert" data-testid="api-unreachable">
+        <h2>連唔到預測 API · Could not reach the prediction API</h2>
+        <p>@(string.IsNullOrWhiteSpace(Model.ErrorMessage) ? "The page could not call the prediction API." : Model.ErrorMessage)</p>
+    </section>
+}

@@ -1,0 +1,124 @@
+@page "/carparks/{code}"
+@model CarParkModel
+@{
+    ViewData["Title"] = string.IsNullOrWhiteSpace(Model.Code)
+        ? "停車場 · Car park"
+        : $"{Model.Code} · 佔用預測";
+}
+
+<partial name="_ApiAlerts" model="Model" />
+
+@if (Model.NotFoundPark)
+{
+    <section class="banner" data-testid="not-found">
+        <h2>搵唔到停車場 · Car park not found</h2>
+        <p>@(string.IsNullOrWhiteSpace(Model.ErrorMessage) ? "The prediction API could not find this car park." : Model.ErrorMessage)</p>
+        <p><a href="/">全部停車場 · All car parks</a></p>
+    </section>
+}
+else if (Model.Prediction is CarParkPredictionResult prediction)
+{
+    <p class="crumb"><a href="/">全部停車場 · All car parks</a></p>
+    <div class="page-head">
+        <div>
+            <h1>@prediction.CarParkCode</h1>
+            <p class="lede">未來 1–6 小時預測佔用率，刻度 0–100。Predicted occupancy for the next 1–6 hours.</p>
+        </div>
+        <a class="button" href="@Request.Path">重新整理 Refresh</a>
+    </div>
+
+    <dl class="facts">
+        <div>
+            <dt>產生時間 Generated at</dt>
+            <dd><time data-testid="generated-at" datetime="@OccupancyDisplay.FormatIso(prediction.GeneratedAt)">@OccupancyDisplay.FormatHongKong(prediction.GeneratedAt)</time></dd>
+        </div>
+        <div>
+            <dt>方法 Method</dt>
+            <dd data-testid="method">@prediction.Method</dd>
+        </div>
+        <div>
+            <dt>預測器 Predictor</dt>
+            <dd>@prediction.Predictor</dd>
+        </div>
+        <div>
+            <dt>時區 Timezone</dt>
+            <dd>@prediction.Timezone</dd>
+        </div>
+        <div>
+            <dt>刻度 Scale</dt>
+            <dd data-testid="scale">@prediction.OccupancyPercentScale</dd>
+        </div>
+        <div>
+            <dt>最新佔用 Latest</dt>
+            <dd>
+                @OccupancyDisplay.FormatPercent(prediction.LatestOccupancyPercent)
+                @if (prediction.LatestSnapshotTime is DateTimeOffset latest)
+                {
+                    <span class="muted">· @OccupancyDisplay.FormatHongKong(latest)</span>
+                }
+            </dd>
+        </div>
+    </dl>
+
+    @if (!string.IsNullOrWhiteSpace(prediction.FallbackReason))
+    {
+        <p class="note">@prediction.FallbackReason</p>
+    }
+
+    <section class="panel" aria-labelledby="chart-title">
+        <h2 id="chart-title">預測圖 Chart</h2>
+        <div class="chart" data-testid="occupancy-chart">
+            @foreach (var horizon in Model.Horizons)
+            {
+                var point = OccupancyDisplay.AtHorizon(prediction.Predictions, horizon);
+                <div class="bar-row">
+                    <span class="bar-label">+@(horizon)h</span>
+                    <div class="bar-track">
+                        <div class="bar-fill @OccupancyDisplay.LevelClass(point?.PredictedOccupancyPercent)" style="width: @OccupancyDisplay.BarWidth(point?.PredictedOccupancyPercent)"></div>
+                    </div>
+                    <span class="bar-value">@OccupancyDisplay.FormatPercent(point?.PredictedOccupancyPercent)</span>
+                </div>
+            }
+        </div>
+    </section>
+
+    <div class="table-scroll">
+        <table class="detail" data-testid="prediction-table">
+            <caption>每小時預測 · Hourly predictions</caption>
+            <thead>
+                <tr>
+                    <th scope="col">時距 Horizon</th>
+                    <th scope="col">目標時間 Target</th>
+                    <th scope="col">預測 Predicted</th>
+                    <th scope="col">基線 Baseline</th>
+                    <th scope="col">趨勢 Trend</th>
+                    <th scope="col">樣本 Samples</th>
+                    <th scope="col">來源 Source</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var horizon in Model.Horizons)
+                {
+                    var point = OccupancyDisplay.AtHorizon(prediction.Predictions, horizon);
+                    <tr data-horizon="@horizon">
+                        <th scope="row">+@(horizon)h</th>
+                        <td>@(point is null ? "—" : OccupancyDisplay.FormatHongKong(point.TargetTime))</td>
+                        <td class="num" data-testid="predicted">@OccupancyDisplay.FormatPercent(point?.PredictedOccupancyPercent)</td>
+                        <td class="num">@OccupancyDisplay.FormatPercent(point?.BaselinePercent)</td>
+                        <td class="num">@OccupancyDisplay.FormatPercent(point?.AppliedTrendPercent)</td>
+                        <td class="num">@(point?.HistoricalSampleCount.ToString(CultureInfo.InvariantCulture) ?? "—")</td>
+                        <td>@(point?.BaselineSource ?? "—")</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+else if (!Model.DataUnavailable && !Model.ApiUnreachable && !string.IsNullOrWhiteSpace(Model.ErrorMessage))
+{
+    <section class="banner banner-warn" role="alert" data-testid="api-error">
+        <h2>預測請求無效 · The prediction request was rejected</h2>
+        <p>@Model.ErrorMessage</p>
+        <p><a href="/">全部停車場 · All car parks</a></p>
+    </section>
+}
