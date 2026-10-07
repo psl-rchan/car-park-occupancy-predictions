@@ -46,6 +46,8 @@
             </p>
         </div>
 
+        <partial name="_HighOccupancyCharts" model="Model" />
+
         <div class="toolbar">
             <label class="filter" for="park-filter">搜尋 Search
                 <input id="park-filter" type="search" placeholder="CP01" autocomplete="off" />
@@ -58,6 +60,11 @@
                 <li><i class="swatch is-quiet"></i>低於 60%</li>
                 <li><i class="swatch is-busy"></i>60–85%</li>
                 <li><i class="swatch is-full"></i>85%+</li>
+                <li>
+                    <i class="threshold-swatch" aria-hidden="true"></i>
+                    底線 = 高佔用 ≥ @Model.HighOccupancyThresholdLabel%
+                    <span class="muted">Underline = high occupancy</span>
+                </li>
             </ul>
         </div>
 
@@ -89,7 +96,8 @@
                                 @foreach (var horizon in Model.Horizons)
                                 {
                                     var point = OccupancyDisplay.AtHorizon(row.Predictions, horizon);
-                                    <td class="occ" data-horizon="@horizon">
+                                    var high = HighOccupancyCharts.IsAtOrAbove(point?.PredictedOccupancyPercent, Model.HighOccupancyThresholdPercent);
+                                    <td class="occ@(high ? " occ-high" : "")" data-horizon="@horizon">
                                         <span class="occ-value">@OccupancyDisplay.FormatPercent(point?.PredictedOccupancyPercent)</span>
                                         <span class="occ-track" aria-hidden="true">
                                             <span class="occ-bar @OccupancyDisplay.LevelClass(point?.PredictedOccupancyPercent)" style="width: @OccupancyDisplay.BarWidth(point?.PredictedOccupancyPercent)"></span>

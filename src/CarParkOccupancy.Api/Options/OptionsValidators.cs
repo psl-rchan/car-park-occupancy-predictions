@@ -51,6 +51,13 @@ public sealed class CarParkDataOptionsValidator : IValidateOptions<CarParkDataOp
             return ValidateOptionsResult.Fail("CarParkData:CommandTimeoutSeconds must be at least 1.");
         }
 
+        var threshold = options.HighOccupancyThresholdPercent;
+        if (double.IsNaN(threshold) || double.IsInfinity(threshold) || threshold is < 0 or > 100)
+        {
+            return ValidateOptionsResult.Fail(
+                "CarParkData:HighOccupancyThresholdPercent must be a number from 0 to 100.");
+        }
+
         var httpError = ValidateHttp(options.Http);
         if (httpError is not null)
         {

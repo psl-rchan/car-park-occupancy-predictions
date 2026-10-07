@@ -24,7 +24,7 @@ The development URL is `http://localhost:5080`. OpenAPI is served at `http://loc
 
 `dotnet run` serves the pages and the API on the same host. The pages call the HTTP API (they do not read SQL themselves).
 
-- Dashboard: [http://localhost:5080/](http://localhost:5080/) — car parks and predicted occupancy for hours 1–6. It calls `GET /api/carparks` and `POST /api/carparks/predictions`.
+- Dashboard: [http://localhost:5080/](http://localhost:5080/) — car parks and predicted occupancy for hours 1–6, plus two high-occupancy charts. It calls `GET /api/carparks` and `POST /api/carparks/predictions`. High occupancy is a percent of capacity at or above `CarParkData:HighOccupancyThresholdPercent` (default 80). One chart lists parks predicted to hit that level in any of the next 1–6 hours, and marks parks that stay high in every hour. The other lists parks whose latest snapshot is already high. The legend on the page names the setting.
 - One car park: `http://localhost:5080/carparks/{code}` — bar chart and table, including `generatedAt` and `method`. It calls `GET /api/carparks/{code}/predictions`.
 
 When the selected snapshot source cannot be read, those API calls return HTTP 503 (SQL Server is missing or down, the HTTP API is not configured, or the remote host cannot be reached) or HTTP 502 (the remote API returned an unexpected status or JSON). The page explains that car park data is unavailable. It does not show the connection string or an API key.
@@ -287,7 +287,7 @@ dotnet run --project src/CarParkOccupancy.Api
 
 `dotnet run` 同一個 host 提供網頁同 API。網頁經 HTTP 呼叫 API，唔會自己讀 SQL。
 
-- 總覽：[http://localhost:5080/](http://localhost:5080/) — 停車場列表同未來 1–6 小時預測佔用率。呼叫 `GET /api/carparks` 同 `POST /api/carparks/predictions`。
+- 總覽：[http://localhost:5080/](http://localhost:5080/) — 停車場列表同未來 1–6 小時預測佔用率，再加兩張高佔用圖。呼叫 `GET /api/carparks` 同 `POST /api/carparks/predictions`。高佔用係佔容量達到或超過 `CarParkData:HighOccupancyThresholdPercent`（預設 80）。一張圖列出未來 1–6 小時內任何一個小時會達到門檻嘅停車場，並標出每個小時都高佔用嘅場。另一張列出最新快照已經高佔用嘅場。頁面圖例寫明呢個設定鍵。
 - 單一停車場：`http://localhost:5080/carparks/{code}` — 棒形圖同表格，顯示 `generatedAt` 同 `method`。呼叫 `GET /api/carparks/{code}/predictions`。
 
 選定嘅快照來源讀唔到時，API 回 HTTP 503（未設定或連唔到 SQL Server、未設定 HTTP API，或者遠端主機連唔到）或 HTTP 502（遠端回咗預期之外嘅狀態碼或 JSON）。頁面會說明而家讀唔到停車場資料，亦唔會顯示連線字串或者 API 密鑰。

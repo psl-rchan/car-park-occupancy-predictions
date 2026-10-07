@@ -32,6 +32,12 @@ public sealed class CarParkDataOptions
 
     public int CommandTimeoutSeconds { get; set; } = 60;
 
+    /// <summary>
+    /// A car park is high occupancy when its percent of capacity is at least this value.
+    /// The dashboard charts and legend read it. Default is 80 on the 0–100 scale.
+    /// </summary>
+    public double HighOccupancyThresholdPercent { get; set; } = 80;
+
     public HttpOccupancySourceOptions Http { get; set; } = new();
 }
 
