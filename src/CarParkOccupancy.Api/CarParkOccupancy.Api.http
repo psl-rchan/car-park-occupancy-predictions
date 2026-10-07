@@ -1,0 +1,26 @@
+@host = http://localhost:5080
+
+GET {{host}}/health
+
+###
+
+GET {{host}}/api/carparks
+
+###
+
+GET {{host}}/api/carparks/CP001/predictions
+
+###
+
+GET {{host}}/api/carparks/CP001/predictions?horizons=1&horizons=3&countingCategory=PrivateCar
+
+###
+
+POST {{host}}/api/carparks/predictions
+Content-Type: application/json
+
+{
+  "carParkCodes": [ "CP001", "CP002" ],
+  "countingCategory": "PrivateCar",
+  "horizons": [ 1, 2, 3, 4, 5, 6 ]
+}
