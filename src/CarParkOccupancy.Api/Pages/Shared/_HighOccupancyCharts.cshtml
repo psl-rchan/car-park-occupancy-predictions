@@ -1,0 +1,119 @@
+@model IndexModel
+<section class="chart-board" aria-labelledby="high-charts-title">
+    <div class="chart-board-head">
+        <h2 id="high-charts-title">高佔用圖表 <span>High occupancy</span></h2>
+        <ul class="legend" data-testid="high-occupancy-legend">
+            <li>
+                <i class="threshold-swatch" aria-hidden="true"></i>
+                <span>
+                    高佔用門檻 High occupancy ≥ <strong data-testid="high-occupancy-threshold">@Model.HighOccupancyThresholdLabel%</strong>
+                    of capacity。設定 <code>CarParkData:HighOccupancyThresholdPercent</code>。
+                    棒上嘅直條就係呢個門檻。The mark on each bar is that threshold.
+                </span>
+            </li>
+            <li>達到或超過門檻先會入選（包含剛好等於）。A park is included at or above the threshold, including an exact match.</li>
+        </ul>
+    </div>
+
+    <div class="chart-grid">
+        <section class="panel" aria-labelledby="predicted-high-title" data-testid="predicted-high-chart">
+            <h2 id="predicted-high-title">預測高佔用 <span>Predicted high occupancy</span></h2>
+            <p class="lede">
+                未來 1–6 小時內，任何一個小時嘅預測會達到門檻嘅停車場。
+                如果每個小時都達到，會標「全部時段」。
+                Parks predicted to reach the threshold in any hour from 1 to 6.
+                Parks that stay there in every hour are marked “All hours”.
+            </p>
+            <p class="count">
+                <span data-testid="predicted-high-count">@Model.PredictedHigh.Count</span>
+                個停車場 · car parks
+                <span class="muted">·</span>
+                <span data-testid="predicted-high-all-count">@Model.PredictedHighEveryHourCount</span>
+                個全部時段都高佔用 · high in every hour
+            </p>
+            @if (Model.PredictedHigh.Count == 0)
+            {
+                <p class="empty-chart" data-testid="predicted-high-empty">
+                    未來 1–6 小時冇停車場會達到高佔用門檻。
+                    No car park is predicted to reach the high-occupancy threshold.
+                </p>
+            }
+            else
+            {
+                <ol class="park-chart">
+                    @foreach (var park in Model.PredictedHigh)
+                    {
+                        <li data-testid="predicted-high-park" data-code="@park.Code" data-span="@park.Span">
+                            <div class="park-chart-head">
+                                <a asp-page="/CarPark" asp-route-code="@park.Code">@park.Code</a>
+                                @if (park.HighInEveryHorizon)
+                                {
+                                    <span class="badge badge-all">全部時段 <span>All hours</span></span>
+                                }
+                                else
+                                {
+                                    <span class="badge badge-any">部分時段 <span>Some hours</span></span>
+                                }
+                                <span class="bar-value">最高 Max @OccupancyDisplay.FormatPercent(park.MaxPredictedPercent) · +@(park.MaxHorizonHours)h</span>
+                            </div>
+                            <div class="chart" data-testid="predicted-high-hours">
+                                @foreach (var hour in park.Hours)
+                                {
+                                    <div class="bar-row" data-horizon="@hour.HorizonHours" data-high="@(hour.IsHigh ? "true" : "false")">
+                                        <span class="bar-label">+@(hour.HorizonHours)h</span>
+                                        <div class="bar-track">
+                                            <div class="bar-fill @OccupancyDisplay.LevelClass(hour.PredictedOccupancyPercent)@(hour.IsHigh ? " is-over-threshold" : "")" style="width: @OccupancyDisplay.BarWidth(hour.PredictedOccupancyPercent)"></div>
+                                            <span class="threshold-mark" style="left: @Model.ThresholdMarkLeft" title="門檻 Threshold @Model.HighOccupancyThresholdLabel%"></span>
+                                        </div>
+                                        <span class="bar-value">@OccupancyDisplay.FormatPercent(hour.PredictedOccupancyPercent)</span>
+                                    </div>
+                                }
+                            </div>
+                        </li>
+                    }
+                </ol>
+            }
+        </section>
+
+        <section class="panel" aria-labelledby="current-high-title" data-testid="current-high-chart">
+            <h2 id="current-high-title">目前高佔用 <span>Currently high occupancy</span></h2>
+            <p class="lede">
+                最新一張快照嘅佔用率已經達到門檻嘅停車場。
+                Parks whose latest snapshot is already at or above the threshold.
+            </p>
+            <p class="count">
+                <span data-testid="current-high-count">@Model.CurrentHigh.Count</span>
+                個停車場 · car parks
+            </p>
+            @if (Model.CurrentHigh.Count == 0)
+            {
+                <p class="empty-chart" data-testid="current-high-empty">
+                    最新快照入面冇停車場達到高佔用門檻。
+                    No car park is currently at or above the high-occupancy threshold.
+                </p>
+            }
+            else
+            {
+                <div class="chart" data-testid="current-high-bars">
+                    @foreach (var park in Model.CurrentHigh)
+                    {
+                        <div class="current-park" data-testid="current-high-park" data-code="@park.Code">
+                            <div class="bar-row rank">
+                                <a class="bar-label" asp-page="/CarPark" asp-route-code="@park.Code">@park.Code</a>
+                                <div class="bar-track">
+                                    <div class="bar-fill is-over-threshold" style="width: @OccupancyDisplay.BarWidth(park.OccupancyPercent)"></div>
+                                    <span class="threshold-mark" style="left: @Model.ThresholdMarkLeft" title="門檻 Threshold @Model.HighOccupancyThresholdLabel%"></span>
+                                </div>
+                                <span class="bar-value">@OccupancyDisplay.FormatPercent(park.OccupancyPercent)</span>
+                            </div>
+                            @if (park.SnapshotTime is DateTimeOffset snapshot)
+                            {
+                                <p class="rank-meta">最新 Latest <time datetime="@OccupancyDisplay.FormatIso(snapshot)">@OccupancyDisplay.FormatHongKong(snapshot)</time></p>
+                            }
+                        </div>
+                    }
+                </div>
+            }
+        </section>
+    </div>
+</section>

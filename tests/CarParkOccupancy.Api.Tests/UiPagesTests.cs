@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -61,6 +62,11 @@ public sealed class UiPagesTests
         Assert.Contains("href=\"/carparks/CP001\"", homeHtml);
         Assert.Contains("href=\"/carparks/CP002\"", homeHtml);
         Assert.Contains("82.0%", homeHtml);
+        Assert.Contains("data-testid=\"predicted-high-chart\"", homeHtml);
+        Assert.Contains("data-testid=\"current-high-chart\"", homeHtml);
+        Assert.Contains("data-testid=\"predicted-high-park\" data-code=\"CP002\" data-span=\"all\"", homeHtml);
+        Assert.Contains("data-testid=\"current-high-park\" data-code=\"CP002\"", homeHtml);
+        Assert.DoesNotContain("data-code=\"CP001\"", homeHtml);
         foreach (var item in prediction.Predictions)
         {
             Assert.Contains($"data-horizon=\"{item.HorizonHours}\"", homeHtml);
@@ -108,6 +114,102 @@ public sealed class UiPagesTests
             Assert.Contains(OccupancyDisplay.FormatPercent(item.PredictedOccupancyPercent), html);
             Assert.Contains($"+{item.HorizonHours}h", html);
         }
+    }
+
+    [Fact]
+    public async Task Dashboard_charts_follow_sample_predictions_and_latest_snapshots()
+    {
+        await using var factory = ApiFactory.WithSampleSnapshots();
+        using var client = factory.CreateClient();
+
+        var codes = await client.GetFromJsonAsync<CarParkListResponse>("/api/carparks", JsonOptions);
+        Assert.NotNull(codes);
+        var batchResponse = await client.PostAsJsonAsync(
+            "/api/carparks/predictions",
+            new BatchPredictionRequest
+            {
+                CarParkCodes = codes.CarParks.ToList(),
+                Horizons = [1, 2, 3, 4, 5, 6]
+            },
+            JsonOptions);
+        batchResponse.EnsureSuccessStatusCode();
+        var batch = await batchResponse.Content.ReadFromJsonAsync<BatchPredictionResponse>(JsonOptions);
+        Assert.NotNull(batch);
+
+        var inputs = batch.Results.Select(item => new ParkOccupancyInput
+        {
+            Code = item.CarParkCode,
+            Found = item.Found && item.Prediction is not null,
+            LatestOccupancyPercent = item.Prediction?.LatestOccupancyPercent,
+            LatestSnapshotTime = item.Prediction?.LatestSnapshotTime,
+            Predictions = item.Prediction?.Predictions ?? []
+        }).ToArray();
+        var predicted = HighOccupancyCharts.Predicted(inputs, [1, 2, 3, 4, 5, 6], 80);
+        var current = HighOccupancyCharts.Current(inputs, 80);
+        Assert.NotEmpty(predicted);
+        Assert.NotEmpty(current);
+        Assert.Contains(predicted, park => park.HighInEveryHorizon);
+
+        var home = await client.GetAsync("/");
+        home.EnsureSuccessStatusCode();
+        var html = await home.Content.ReadAsStringAsync();
+        Assert.Contains("data-testid=\"prediction-grid\"", html);
+        Assert.Contains("data-testid=\"high-occupancy-legend\"", html);
+        Assert.Contains("data-testid=\"high-occupancy-threshold\">80%", html);
+        Assert.Contains("CarParkData:HighOccupancyThresholdPercent", html);
+        Assert.Contains("預測高佔用", html);
+        Assert.Contains("Predicted high occupancy", html);
+        Assert.Contains("目前高佔用", html);
+        Assert.Contains("Currently high occupancy", html);
+        Assert.Contains("全部時段", html);
+        Assert.Contains("All hours", html);
+        Assert.Contains($"data-testid=\"predicted-high-count\">{predicted.Count}", html);
+        Assert.Contains($"data-testid=\"current-high-count\">{current.Count}", html);
+        foreach (var park in predicted)
+        {
+            Assert.Contains(
+                $"data-testid=\"predicted-high-park\" data-code=\"{park.Code}\" data-span=\"{park.Span}\"",
+                html);
+        }
+
+        foreach (var park in current)
+        {
+            Assert.Contains($"data-testid=\"current-high-park\" data-code=\"{park.Code}\"", html);
+        }
+
+        var quiet = inputs
+            .Where(park => park.Found)
+            .Select(park => park.Code)
+            .Except(predicted.Select(park => park.Code), StringComparer.OrdinalIgnoreCase)
+            .Except(current.Select(park => park.Code), StringComparer.OrdinalIgnoreCase)
+            .First();
+        Assert.DoesNotContain($"data-code=\"{quiet}\"", html);
+        Assert.Contains("occ-high", html);
+    }
+
+    [Fact]
+    public async Task Dashboard_uses_the_configured_high_occupancy_threshold()
+    {
+        await using var strict = ApiFactory.WithStore(new FlatHistoryStore(), highOccupancyThreshold: 90);
+        using var strictClient = strict.CreateClient();
+        var strictHtml = await strictClient.GetStringAsync("/");
+        Assert.Contains("data-testid=\"high-occupancy-threshold\">90%", strictHtml);
+        Assert.Contains("data-testid=\"predicted-high-empty\"", strictHtml);
+        Assert.Contains("data-testid=\"current-high-empty\"", strictHtml);
+        Assert.DoesNotContain("data-testid=\"predicted-high-park\"", strictHtml);
+        Assert.DoesNotContain("data-testid=\"current-high-park\"", strictHtml);
+        Assert.Contains("data-testid=\"prediction-grid\"", strictHtml);
+        Assert.Contains("82.0%", strictHtml);
+        Assert.DoesNotContain("occ-high", strictHtml);
+
+        await using var loose = ApiFactory.WithStore(new FlatHistoryStore(), highOccupancyThreshold: 30);
+        using var looseClient = loose.CreateClient();
+        var looseHtml = await looseClient.GetStringAsync("/");
+        Assert.Contains("data-testid=\"high-occupancy-threshold\">30%", looseHtml);
+        Assert.Contains("data-testid=\"predicted-high-park\" data-code=\"CP001\" data-span=\"all\"", looseHtml);
+        Assert.Contains("data-testid=\"predicted-high-park\" data-code=\"CP002\" data-span=\"all\"", looseHtml);
+        Assert.Contains("data-testid=\"current-high-park\" data-code=\"CP001\"", looseHtml);
+        Assert.Contains("data-testid=\"current-high-park\" data-code=\"CP002\"", looseHtml);
     }
 
     [Fact]
@@ -192,17 +294,23 @@ public sealed class UiPagesTests
         private readonly ICarParkReadStore? _store;
         private readonly bool _forceSqlStore;
         private readonly bool _sampleSnapshots;
+        private readonly double? _highOccupancyThreshold;
 
         public ApiFactory()
-            : this(store: null, forceSqlStore: true, sampleSnapshots: false)
+            : this(store: null, forceSqlStore: true, sampleSnapshots: false, highOccupancyThreshold: null)
         {
         }
 
-        private ApiFactory(ICarParkReadStore? store, bool forceSqlStore, bool sampleSnapshots)
+        private ApiFactory(
+            ICarParkReadStore? store,
+            bool forceSqlStore,
+            bool sampleSnapshots,
+            double? highOccupancyThreshold)
         {
             _store = store;
             _forceSqlStore = forceSqlStore;
             _sampleSnapshots = sampleSnapshots;
+            _highOccupancyThreshold = highOccupancyThreshold;
             Environment.SetEnvironmentVariable("Ui__ApiTimeoutSeconds", "15");
             Environment.SetEnvironmentVariable("CarParkData__Source", null);
             Environment.SetEnvironmentVariable(
@@ -211,11 +319,11 @@ public sealed class UiPagesTests
             Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", "Development");
         }
 
-        public static ApiFactory WithStore(ICarParkReadStore store) =>
-            new(store, forceSqlStore: false, sampleSnapshots: false);
+        public static ApiFactory WithStore(ICarParkReadStore store, double? highOccupancyThreshold = null) =>
+            new(store, forceSqlStore: false, sampleSnapshots: false, highOccupancyThreshold);
 
         public static ApiFactory WithSampleSnapshots() =>
-            new(store: null, forceSqlStore: false, sampleSnapshots: true);
+            new(store: null, forceSqlStore: false, sampleSnapshots: true, highOccupancyThreshold: null);
 
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
@@ -223,6 +331,12 @@ public sealed class UiPagesTests
             builder.UseSetting("ConnectionStrings:CarParkDb", "");
             builder.UseSetting("CarParkData:UseSampleSnapshots", _sampleSnapshots ? "true" : "false");
             builder.UseSetting("Ui:ApiTimeoutSeconds", "15");
+            if (_highOccupancyThreshold is double threshold)
+            {
+                builder.UseSetting(
+                    "CarParkData:HighOccupancyThresholdPercent",
+                    threshold.ToString(CultureInfo.InvariantCulture));
+            }
 
             if (_store is not null || _forceSqlStore)
             {
