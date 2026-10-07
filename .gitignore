@@ -1,0 +1,15 @@
+bin/
+obj/
+.vs/
+.vscode/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+TestResults/
+coverage/
+*.DotSettings.user
+appsettings.*.local.json
+secrets.json
+.idea/
+*.log
