@@ -7,20 +7,25 @@ using Microsoft.Extensions.Options;
 
 namespace CarParkOccupancy.Api.Data;
 
-public sealed class DapperCarParkReadStore : ICarParkReadStore
+/// <summary>
+/// Existing Dapper path. History rows are summed per timestamp in SQL Server,
+/// matching the previous read-store query. The read store sums again, which is a no-op
+/// when each timestamp appears once.
+/// </summary>
+public sealed class SqlServerOccupancySnapshotSource : IOccupancySnapshotSource
 {
     private readonly IDbConnectionFactory _connections;
     private readonly SqlObjectNames _names;
     private readonly CarParkDataOptions _dataOptions;
     private readonly TimeZoneInfo _timeZone;
-    private readonly ILogger<DapperCarParkReadStore> _logger;
+    private readonly ILogger<SqlServerOccupancySnapshotSource> _logger;
 
-    public DapperCarParkReadStore(
+    public SqlServerOccupancySnapshotSource(
         IDbConnectionFactory connections,
         SqlObjectNames names,
         IOptions<CarParkDataOptions> dataOptions,
         IOptions<PredictionOptions> predictionOptions,
-        ILogger<DapperCarParkReadStore> logger)
+        ILogger<SqlServerOccupancySnapshotSource> logger)
     {
         _connections = connections;
         _names = names;
@@ -62,14 +67,13 @@ public sealed class DapperCarParkReadStore : ICarParkReadStore
         return found == 1;
     }
 
-    public async Task<IReadOnlyList<OccupancyObservation>> GetHistoryAsync(
+    public async Task<IReadOnlyList<OccupancySnapshot>> GetSnapshotsAsync(
         string carParkCode,
         string? countingCategory,
-        DateTimeOffset asOf,
+        DateTimeOffset fromInclusive,
+        DateTimeOffset toInclusive,
         CancellationToken cancellationToken)
     {
-        var lookbackDays = Math.Max(1, _dataOptions.HistoryLookbackDays);
-        var from = asOf.AddDays(-lookbackDays);
         var sql = $"""
             SELECT {_names.SnapshotTime} AS SnapshotTime,
                    SUM(CAST({_names.Occupied} AS BIGINT)) AS Occupied,
@@ -90,30 +94,32 @@ public sealed class DapperCarParkReadStore : ICarParkReadStore
                     new
                     {
                         CarParkCode = carParkCode,
-                        From = ToQueryParameter(from),
-                        To = ToQueryParameter(asOf),
+                        From = ToQueryParameter(fromInclusive),
+                        To = ToQueryParameter(toInclusive),
                         CountingCategory = countingCategory
                     },
                     cancellationToken)),
             cancellationToken)).AsList();
 
-        var observations = new List<OccupancyObservation>(rows.Count);
+        var snapshots = new List<OccupancySnapshot>(rows.Count);
         foreach (var row in rows)
         {
-            observations.Add(new OccupancyObservation
+            snapshots.Add(new OccupancySnapshot
             {
+                CarParkCode = carParkCode,
                 SnapshotTime = ToOffset(row.SnapshotTime),
+                CountingCategory = countingCategory,
                 Occupied = ClampToInt(row.Occupied),
                 Capacity = ClampToInt(row.Capacity)
             });
         }
 
         _logger.LogDebug(
-            "Loaded {Count} occupancy snapshots for car park {CarParkCode}.",
-            observations.Count,
+            "Loaded {Count} occupancy snapshots for car park {CarParkCode} from SQL Server.",
+            snapshots.Count,
             carParkCode);
 
-        return observations;
+        return snapshots;
     }
 
     private CommandDefinition Command(string sql, object? parameters, CancellationToken cancellationToken)

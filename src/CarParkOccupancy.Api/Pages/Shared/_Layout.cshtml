@@ -28,9 +28,10 @@
             <section class="banner banner-sample" role="status" data-testid="sample-banner">
                 <h2>示範數據 · Sample snapshots</h2>
                 <p>
-                    呢個 Development 預覽用產生出嚟嘅快照，冇讀 SQL Server。
-                    This Development preview does not read SQL Server.
-                    關閉 <code>CarParkData:UseSampleSnapshots</code> 並設定 <code>ConnectionStrings:CarParkDb</code> 就會用真實資料。
+                    呢個預覽用產生出嚟嘅快照，冇讀 SQL Server 或者外部 API。
+                    This preview uses generated snapshots. It does not read SQL Server or an external HTTP API.
+                    將 <code>CarParkData:Source</code> 設為 <code>Sql</code> 或 <code>Http</code> 就會用真實資料。
+                    Development 亦可以開 <code>CarParkData:UseSampleSnapshots</code>（冇連線字串時）。
                 </p>
             </section>
         }

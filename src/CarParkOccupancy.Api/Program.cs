@@ -8,11 +8,7 @@ using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
 
-var sampleRequested = builder.Configuration.GetValue("CarParkData:UseSampleSnapshots", false);
-var connectionString = builder.Configuration.GetConnectionString(SqlConnectionFactory.ConnectionStringName);
-var useSample = sampleRequested
-    && string.IsNullOrWhiteSpace(connectionString)
-    && builder.Environment.IsDevelopment();
+var sourceKind = OccupancySnapshotSourceSelector.Resolve(builder.Configuration, builder.Environment);
 
 builder.Services.AddControllers();
 builder.Services.AddRazorPages();
@@ -39,9 +35,7 @@ builder.Services.AddOptions<PredictionOptions>()
     .Bind(builder.Configuration.GetSection(PredictionOptions.SectionName))
     .ValidateOnStart();
 
-builder.Services.AddSingleton(sp => new SqlObjectNames(sp.GetRequiredService<IOptions<CarParkDataOptions>>().Value));
-builder.Services.AddSingleton<IDbConnectionFactory, SqlConnectionFactory>();
-builder.Services.AddSingleton(new CarParkDataSource(useSample));
+builder.Services.AddSingleton(new CarParkDataSource(sourceKind == OccupancySnapshotSourceKind.Sample));
 builder.Services.AddSingleton<CarParkApiHandlerOverride>();
 
 var apiTimeoutSeconds = Math.Clamp(builder.Configuration.GetValue("Ui:ApiTimeoutSeconds", 120), 1, 600);
@@ -51,14 +45,28 @@ builder.Services.AddHttpClient<CarParkApiClient>(client =>
 })
 .ConfigurePrimaryHttpMessageHandler(sp => sp.GetRequiredService<CarParkApiHandlerOverride>().CreateHandler());
 
-if (useSample)
+switch (sourceKind)
 {
-    builder.Services.AddSingleton<ICarParkReadStore, SampleCarParkReadStore>();
+    case OccupancySnapshotSourceKind.Sample:
+        builder.Services.AddSingleton<IOccupancySnapshotSource, SampleOccupancySnapshotSource>();
+        break;
+    case OccupancySnapshotSourceKind.Http:
+        builder.Services.AddSingleton<OccupancyHttpHandlerOverride>();
+        builder.Services.AddHttpClient<IOccupancySnapshotSource, HttpOccupancySnapshotSource>((sp, client) =>
+        {
+            var seconds = sp.GetRequiredService<IOptions<CarParkDataOptions>>().Value.Http.TimeoutSeconds;
+            client.Timeout = TimeSpan.FromSeconds(Math.Clamp(seconds, 1, 600));
+        })
+        .ConfigurePrimaryHttpMessageHandler(sp => sp.GetRequiredService<OccupancyHttpHandlerOverride>().CreateHandler());
+        break;
+    default:
+        builder.Services.AddSingleton(sp => new SqlObjectNames(sp.GetRequiredService<IOptions<CarParkDataOptions>>().Value));
+        builder.Services.AddSingleton<IDbConnectionFactory, SqlConnectionFactory>();
+        builder.Services.AddScoped<IOccupancySnapshotSource, SqlServerOccupancySnapshotSource>();
+        break;
 }
-else
-{
-    builder.Services.AddScoped<ICarParkReadStore, DapperCarParkReadStore>();
-}
+
+builder.Services.AddScoped<ICarParkReadStore, OccupancySnapshotReadStore>();
 
 builder.Services.AddSingleton<HistoricalBaselinePredictor>();
 builder.Services.AddSingleton<GeminiVertexPredictor>();
@@ -67,10 +75,11 @@ builder.Services.AddScoped<OccupancyPredictionService>();
 
 var app = builder.Build();
 
-if (useSample)
+app.Logger.LogInformation("Occupancy snapshot source is {OccupancySource}.", sourceKind);
+if (sourceKind == OccupancySnapshotSourceKind.Sample)
 {
     app.Logger.LogWarning(
-        "Development sample snapshots are enabled (CarParkData:UseSampleSnapshots). Predictions do not read SQL Server.");
+        "Sample occupancy snapshots are enabled. Predictions do not read SQL Server or the HTTP API.");
 }
 
 app.UseExceptionHandler(errorApp =>
@@ -85,7 +94,7 @@ app.UseExceptionHandler(errorApp =>
 
         var (status, title) = exception switch
         {
-            CarParkDataUnavailableException data => (StatusCodes.Status503ServiceUnavailable, data.Message),
+            CarParkDataUnavailableException data => (data.StatusCode, data.Message),
             UnknownPredictorException unknown => (StatusCodes.Status400BadRequest, unknown.Message),
             _ => (StatusCodes.Status500InternalServerError, "An unexpected error occurred.")
         };

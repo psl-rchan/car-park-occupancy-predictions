@@ -1,8 +1,15 @@
 # ASP.NET Core on .NET 10 (TFM net10.0).
-# Pass the database connection at runtime. Do not bake secrets into the image.
+# Pass the snapshot source at runtime. Do not bake secrets into the image.
 #   docker build -t carpark-occupancy-api .
 #   docker run --rm -p 8080:8080 \
+#     -e CarParkData__Source=Sql \
 #     -e ConnectionStrings__CarParkDb="Server=...;Database=...;User Id=...;Password=...;Encrypt=True" \
+#     carpark-occupancy-api
+#   docker run --rm -p 8080:8080 \
+#     -e CarParkData__Source=Http \
+#     -e CarParkData__Http__BaseUrl="https://occupancy.example" \
+#     -e CarParkData__Http__AuthHeaderName="X-Api-Key" \
+#     -e CarParkData__Http__AuthHeaderValue="..." \
 #     carpark-occupancy-api
 
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build

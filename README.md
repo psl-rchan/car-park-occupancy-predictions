@@ -2,7 +2,9 @@
 
 **Target framework: `net10.0`.** This is an ASP.NET Core Web API on the .NET 10 SDK.
 
-The API serves about 50 car parks. Each park has about a year of occupancy snapshots in SQL Server. It predicts the occupancy rate for the next 1–6 hours, one value per hour, for a single car park. The same process serves a Razor Pages UI that calls these endpoints. This repository is the solution, the web UI, the HTTP API, and the pluggable prediction services.
+The API serves about 50 car parks. Each park has about a year of occupancy snapshots. It predicts the occupancy rate for the next 1–6 hours, one value per hour, for a single car park. The same process serves a Razor Pages UI that calls these endpoints. This repository is the solution, the web UI, the HTTP API, and the pluggable prediction services.
+
+Snapshots are read through `IOccupancySnapshotSource`. SQL Server is the default. A third-party HTTP API can supply the same rows later; that provider has not published a URL or contract yet.
 
 Occupancy in every response is a **percent of capacity on a 0–100 scale** (0 empty, 100 full). The field is `predictedOccupancyPercent`. It is not a 0–1 fraction. The payload also includes `occupancyPercentScale` with the value `"0-100"`.
 
@@ -25,7 +27,7 @@ The development URL is `http://localhost:5080`. OpenAPI is served at `http://loc
 - Dashboard: [http://localhost:5080/](http://localhost:5080/) — car parks and predicted occupancy for hours 1–6. It calls `GET /api/carparks` and `POST /api/carparks/predictions`.
 - One car park: `http://localhost:5080/carparks/{code}` — bar chart and table, including `generatedAt` and `method`. It calls `GET /api/carparks/{code}/predictions`.
 
-When `ConnectionStrings:CarParkDb` is missing, or SQL Server cannot be queried, those API calls return HTTP 503 and the page explains that car park data is unavailable. The page does not show the connection string.
+When the selected snapshot source cannot be read, those API calls return HTTP 503 (SQL Server is missing or down, the HTTP API is not configured, or the remote host cannot be reached) or HTTP 502 (the remote API returned an unexpected status or JSON). The page explains that car park data is unavailable. It does not show the connection string or an API key.
 
 To click through the UI without SQL Server, turn on Development sample snapshots. This is ignored when a connection string is set, and it is ignored outside Development:
 
@@ -33,9 +35,71 @@ To click through the UI without SQL Server, turn on Development sample snapshots
 ASPNETCORE_ENVIRONMENT=Development CarParkData__UseSampleSnapshots=true dotnet run --project src/CarParkOccupancy.Api
 ```
 
-Open `http://localhost:5080/`. The page shows a sample-data banner. Leave `CarParkData:UseSampleSnapshots` false (the committed default) when you want the 503 message or a real database.
+Open `http://localhost:5080/`. The page shows a sample-data banner. Leave `CarParkData:UseSampleSnapshots` false (the committed default) when you want the 503 message or a real database. `CarParkData:Source=Sample` forces that preview even when a connection string is set. See [Snapshot source](#snapshot-source).
 
 `global.json` asks for the .NET 10 SDK (`10.0.100`, roll forward to the latest 10.0 feature band). Project files set `<TargetFramework>net10.0</TargetFramework>`.
+
+### Snapshot source
+
+`CarParkData:Source` selects who supplies occupancy snapshots. Prediction and the Razor Pages UI do not talk to SQL Server or the remote API themselves. They use `ICarParkReadStore`, and that store reads `IOccupancySnapshotSource`.
+
+| `CarParkData:Source` | Implementation | Use |
+| --- | --- | --- |
+| `Sql` (default) | `SqlServerOccupancySnapshotSource` | Existing Dapper / SQL Server path |
+| `Http` | `HttpOccupancySnapshotSource` | Third-party HTTP API (URL and docs are still TBD) |
+| `Sample` | `SampleOccupancySnapshotSource` | Generated local UI data |
+
+`Sql` stays compatible with the current Development preview. When `CarParkData:UseSampleSnapshots` is true, the process is Development, and `ConnectionStrings:CarParkDb` is empty, sample snapshots are still selected. A configured connection string wins over that flag. `Source=Http` does not fall back to sample data. `Source=Sample` uses sample data in any environment.
+
+```bash
+# SQL Server (default)
+export CarParkData__Source=Sql
+export ConnectionStrings__CarParkDb="Server=localhost;Database=CarPark;User Id=app;Password=<secret>;Encrypt=True;TrustServerCertificate=True"
+
+# Local sample UI
+CarParkData__Source=Sample dotnet run --project src/CarParkOccupancy.Api
+
+# Third-party HTTP API. The provider has not published the URL yet.
+export CarParkData__Source=Http
+export CarParkData__Http__BaseUrl="https://occupancy.example/v1"
+export CarParkData__Http__AuthHeaderName="X-Api-Key"
+export CarParkData__Http__AuthHeaderValue="<secret>"
+```
+
+`appsettings.json` leaves `CarParkData:Http:BaseUrl`, `AuthHeaderName`, and `AuthHeaderValue` empty. Put the base URL and the header value in environment variables or user secrets. Do not commit them.
+
+```bash
+dotnet user-secrets set "CarParkData:Http:BaseUrl" "https://occupancy.example/v1" --project src/CarParkOccupancy.Api
+dotnet user-secrets set "CarParkData:Http:AuthHeaderName" "X-Api-Key" --project src/CarParkOccupancy.Api
+dotnet user-secrets set "CarParkData:Http:AuthHeaderValue" "<secret>" --project src/CarParkOccupancy.Api
+```
+
+The HTTP client is a typed `HttpClient`. `CarParkData:Http:TimeoutSeconds` defaults to 30. Data endpoints return:
+
+- HTTP 503 when the base URL is missing, the call times out, the host cannot be reached, or the remote API returns HTTP 502, 503, or 504.
+- HTTP 502 when the remote API returns another error status, or JSON that does not match the snapshot contract.
+
+The response does not include the auth header value. Until the provider publishes docs, the client calls:
+
+`GET {BaseUrl}/{SnapshotsPath}?carParkCode=&countingCategory=&from=&to=`
+
+`SnapshotsPath` defaults to `occupancy-snapshots`. The body may be a JSON array, one snapshot object, or an object with a `snapshots` array (`CarParkData:Http:Json:Collection`). Property names are case-insensitive. Defaults match the stakeholder columns:
+
+```json
+{
+  "snapshots": [
+    {
+      "CarParkCode": "CP001",
+      "SnapshotTime": "2026-10-07T01:55:00+08:00",
+      "CountingCategory": "PrivateCar",
+      "Capacity": 200,
+      "Occupied": 140
+    }
+  ]
+}
+```
+
+Change `CarParkData:Http:Json` when the real field names arrive. `SnapshotTime` is ISO-8601. A value with no offset uses `CarParkData:SnapshotTimeIsUtc` and `Prediction:Timezone`, same as SQL Server. The car park list and the existence check use `HistoryLookbackDays` ending at the current UTC time. When `countingCategory` is omitted, rows that share a timestamp are summed.
 
 ### Connection string
 
@@ -185,11 +249,11 @@ docker run --rm -p 8080:8080 \
   carpark-occupancy-api
 ```
 
-The UI is on `http://localhost:8080/`. Data pages return HTTP 503 until the connection string is set.
+The UI is on `http://localhost:8080/`. With the default `Sql` source, data pages return HTTP 503 until the connection string is set. For the third-party API, pass `CarParkData__Source=Http`, `CarParkData__Http__BaseUrl`, and the auth header variables instead of baking them into the image. The provider URL is still TBD.
 
 ### Data access
 
-Reads go through Dapper and `Microsoft.Data.SqlClient`. The table already exists in the stakeholder database, and the table and column names are configuration, so the API does not ship EF Core migrations. Identifiers from configuration are allow-listed before they are composed into SQL. Filter values are parameters.
+`IOccupancySnapshotSource` is the snapshot plug-in: `SqlServerOccupancySnapshotSource` (Dapper and `Microsoft.Data.SqlClient`), `HttpOccupancySnapshotSource` (typed `HttpClient`), and `SampleOccupancySnapshotSource`. `OccupancySnapshotReadStore` implements `ICarParkReadStore` for prediction. The SQL table already exists in the stakeholder database, and the table and column names are configuration, so the API does not ship EF Core migrations. Identifiers from configuration are allow-listed before they are composed into SQL. Filter values are parameters.
 
 ### Tests
 
@@ -203,7 +267,9 @@ dotnet test CarParkOccupancy.slnx
 
 **目標框架：`net10.0`。** 呢個係 .NET 10 上面嘅 ASP.NET Core Web API。
 
-大約 50 個停車場，每個約有一年佔用快照（SQL Server）。API 預測未來 1 至 6 小時、每小時一個佔用率。同一個行程會同時提供 Razor Pages 介面，介面會呼叫呢啲端點。呢個 repo 包括 solution、網頁、HTTP API，同可替換嘅預測服務。
+大約 50 個停車場，每個約有一年佔用快照。API 預測未來 1 至 6 小時、每小時一個佔用率。同一個行程會同時提供 Razor Pages 介面，介面會呼叫呢啲端點。呢個 repo 包括 solution、網頁、HTTP API，同可替換嘅預測服務。
+
+快照經 `IOccupancySnapshotSource` 讀取。預設係 SQL Server。第三方 HTTP API 之後可以提供同一批列；對方未公布網址同文件。
 
 所有回應入面嘅佔用率都係**容量百分比，刻度 0–100**（0 代表空，100 代表滿）。欄位名係 `predictedOccupancyPercent`，唔係 0–1 分數。回應亦有 `occupancyPercentScale`，值係 `"0-100"`。
 
@@ -224,7 +290,7 @@ dotnet run --project src/CarParkOccupancy.Api
 - 總覽：[http://localhost:5080/](http://localhost:5080/) — 停車場列表同未來 1–6 小時預測佔用率。呼叫 `GET /api/carparks` 同 `POST /api/carparks/predictions`。
 - 單一停車場：`http://localhost:5080/carparks/{code}` — 棒形圖同表格，顯示 `generatedAt` 同 `method`。呼叫 `GET /api/carparks/{code}/predictions`。
 
-未設定 `ConnectionStrings:CarParkDb`，或者 SQL Server 查詢失敗時，API 回 HTTP 503，頁面會說明而家讀唔到停車場資料，亦唔會顯示連線字串。
+選定嘅快照來源讀唔到時，API 回 HTTP 503（未設定或連唔到 SQL Server、未設定 HTTP API，或者遠端主機連唔到）或 HTTP 502（遠端回咗預期之外嘅狀態碼或 JSON）。頁面會說明而家讀唔到停車場資料，亦唔會顯示連線字串或者 API 密鑰。
 
 冇 SQL Server 又想撳吓介面，可以喺 Development 開示範快照。已設定連線字串，或者唔係 Development，呢個開關會被忽略：
 
@@ -232,9 +298,55 @@ dotnet run --project src/CarParkOccupancy.Api
 ASPNETCORE_ENVIRONMENT=Development CarParkData__UseSampleSnapshots=true dotnet run --project src/CarParkOccupancy.Api
 ```
 
-然後開 `http://localhost:5080/`。頁面會標明呢啲係示範數據。要用真實資料或者睇 503 提示，保持 `CarParkData:UseSampleSnapshots` 為 false（repo 預設）。
+然後開 `http://localhost:5080/`。頁面會標明呢啲係示範數據。要用真實資料或者睇 503 提示，保持 `CarParkData:UseSampleSnapshots` 為 false（repo 預設）。`CarParkData:Source=Sample` 可以強制用示範數據，即使已設定連線字串。切換來源見下面「快照來源」。
 
 `global.json` 指定 .NET 10 SDK。各 csproj 嘅 `<TargetFramework>` 係 `net10.0`。
+
+### 快照來源
+
+`CarParkData:Source` 決定邊度提供佔用快照。預測同 Razor Pages 唔會自己連 SQL Server 或者遠端 API。佢哋用 `ICarParkReadStore`，而呢個 store 再讀 `IOccupancySnapshotSource`。
+
+| `CarParkData:Source` | 實作 | 用途 |
+| --- | --- | --- |
+| `Sql`（預設） | `SqlServerOccupancySnapshotSource` | 現有 Dapper / SQL Server 路徑 |
+| `Http` | `HttpOccupancySnapshotSource` | 第三方 HTTP API（網址同文件未定） |
+| `Sample` | `SampleOccupancySnapshotSource` | 本機介面用嘅示範快照 |
+
+`Sql` 仍然兼容而家嘅 Development 預覽。`CarParkData:UseSampleSnapshots` 為 true、行程係 Development、而且 `ConnectionStrings:CarParkDb` 係空，就會繼續用示範快照。已設定連線字串就以 SQL 為準。`Source=Http` 唔會退回示範數據。`Source=Sample` 喺任何環境都用示範數據。
+
+```bash
+# SQL Server（預設）
+export CarParkData__Source=Sql
+export ConnectionStrings__CarParkDb="Server=localhost;Database=CarPark;User Id=app;Password=<secret>;Encrypt=True;TrustServerCertificate=True"
+
+# 本機示範介面
+CarParkData__Source=Sample dotnet run --project src/CarParkOccupancy.Api
+
+# 第三方 HTTP API。對方未公布網址。
+export CarParkData__Source=Http
+export CarParkData__Http__BaseUrl="https://occupancy.example/v1"
+export CarParkData__Http__AuthHeaderName="X-Api-Key"
+export CarParkData__Http__AuthHeaderValue="<secret>"
+```
+
+`appsettings.json` 入面 `CarParkData:Http:BaseUrl`、`AuthHeaderName`、`AuthHeaderValue` 留空。網址同 header 值用環境變數或者 user secrets，唔好提交。
+
+```bash
+dotnet user-secrets set "CarParkData:Http:BaseUrl" "https://occupancy.example/v1" --project src/CarParkOccupancy.Api
+dotnet user-secrets set "CarParkData:Http:AuthHeaderName" "X-Api-Key" --project src/CarParkOccupancy.Api
+dotnet user-secrets set "CarParkData:Http:AuthHeaderValue" "<secret>" --project src/CarParkOccupancy.Api
+```
+
+HTTP 用戶端係 typed `HttpClient`。`CarParkData:Http:TimeoutSeconds` 預設 30。資料端點：
+
+- HTTP 503：未設定 base URL、呼叫逾時、連唔到主機，或者遠端回 HTTP 502、503、504。
+- HTTP 502：遠端回其他錯誤狀態，或者 JSON 唔符合快照格式。
+
+回應唔會帶 auth header 值。對方文件未到之前，用戶端呼叫：
+
+`GET {BaseUrl}/{SnapshotsPath}?carParkCode=&countingCategory=&from=&to=`
+
+`SnapshotsPath` 預設 `occupancy-snapshots`。主體可以係 JSON 陣列、單一快照物件，或者有 `snapshots` 陣列嘅物件（`CarParkData:Http:Json:Collection`）。屬性名不分大小寫。預設對應持份者欄位 `CarParkCode`、`SnapshotTime`、`CountingCategory`、`Capacity`、`Occupied`。真實欄位名公布之後，改 `CarParkData:Http:Json`。`SnapshotTime` 用 ISO-8601。冇時區偏移時，同 SQL Server 一樣，跟 `CarParkData:SnapshotTimeIsUtc` 同 `Prediction:Timezone`。停車場列表同「係咪存在」用 `HistoryLookbackDays`，由而家 UTC 時間倒數。冇傳 `countingCategory` 時，同一時間戳嘅列會加總。
 
 ### 連線字串
 
@@ -296,8 +408,8 @@ docker run --rm -p 8080:8080 \
   carpark-occupancy-api
 ```
 
-網頁係 `http://localhost:8080/`。未設定連線字串時，資料頁會顯示 HTTP 503 說明。
+網頁係 `http://localhost:8080/`。預設 `Sql` 來源未設定連線字串時，資料頁會顯示 HTTP 503 說明。第三方 API 用 `CarParkData__Source=Http`、`CarParkData__Http__BaseUrl` 同 auth header 環境變數傳入，唔好寫入映像。對方網址仍然未定。
 
 ### 資料存取
 
-用 Dapper 同 `Microsoft.Data.SqlClient` 讀取現有資料表。表名同欄位名嚟自設定，所以呢版冇 EF Core migration。設定入面嘅識別名稱會先做白名單檢查，篩選值用參數傳遞。
+`IOccupancySnapshotSource` 係快照插入點：`SqlServerOccupancySnapshotSource`（Dapper 同 `Microsoft.Data.SqlClient`）、`HttpOccupancySnapshotSource`（typed `HttpClient`）、`SampleOccupancySnapshotSource`。`OccupancySnapshotReadStore` 實作 `ICarParkReadStore` 畀預測用。SQL 資料表已經喺持份者資料庫，表名同欄位名嚟自設定，所以呢版冇 EF Core migration。設定入面嘅識別名稱會先做白名單檢查，篩選值用參數傳遞。

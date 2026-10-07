@@ -4,13 +4,15 @@
     <section class="banner banner-warn" role="alert" data-testid="data-unavailable">
         <h2>停車場資料暫時讀唔到 · Car park data is unavailable</h2>
         <p>
-            預測 API 回傳 HTTP 503。未設定資料庫時，請設定
+            預測 API 回傳 HTTP 502 或 503，讀唔到佔用快照。未設定 SQL Server 時，請設定
             <code>ConnectionStrings:CarParkDb</code>
             （user secrets，或者環境變數 <code>ConnectionStrings__CarParkDb</code>）。
-            頁面唔會顯示連線字串。
-            The prediction API returned HTTP 503 because occupancy snapshots could not be read.
+            如果快照嚟自第三方 HTTP API，請將 <code>CarParkData:Source</code> 設為 <code>Http</code>，
+            並用環境變數設定 <code>CarParkData:Http:BaseUrl</code>。頁面唔會顯示連線字串或者 API 密鑰。
+            The prediction API returned HTTP 502 or 503 because occupancy snapshots could not be read.
             Set ConnectionStrings:CarParkDb when SQL Server is not configured.
-            This page does not show the connection string.
+            For the third-party HTTP API, set CarParkData:Source to Http and CarParkData:Http:BaseUrl.
+            This page does not show the connection string or API key.
         </p>
         @if (!string.IsNullOrWhiteSpace(Model.ErrorMessage))
         {
