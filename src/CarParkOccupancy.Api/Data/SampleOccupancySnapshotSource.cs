@@ -3,10 +3,11 @@ using CarParkOccupancy.Api.Models;
 namespace CarParkOccupancy.Api.Data;
 
 /// <summary>
-/// Generated snapshots for a Development preview when SQL Server is not configured.
-/// Enable with CarParkData:UseSampleSnapshots. A configured connection string always wins.
+/// Generated snapshots for a local UI when SQL Server and the third-party API are not configured.
+/// Enable with <c>CarParkData:Source=Sample</c>, or keep the Development
+/// <c>CarParkData:UseSampleSnapshots</c> path when no connection string is set.
 /// </summary>
-public sealed class SampleCarParkReadStore : ICarParkReadStore
+public sealed class SampleOccupancySnapshotSource : IOccupancySnapshotSource
 {
     public const int ParkCount = 50;
 
@@ -23,33 +24,42 @@ public sealed class SampleCarParkReadStore : ICarParkReadStore
         return Task.FromResult(TryIndex(carParkCode, out _));
     }
 
-    public Task<IReadOnlyList<OccupancyObservation>> GetHistoryAsync(
+    public Task<IReadOnlyList<OccupancySnapshot>> GetSnapshotsAsync(
         string carParkCode,
         string? countingCategory,
-        DateTimeOffset asOf,
+        DateTimeOffset fromInclusive,
+        DateTimeOffset toInclusive,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (!TryIndex(carParkCode, out var index))
         {
-            return Task.FromResult<IReadOnlyList<OccupancyObservation>>([]);
+            return Task.FromResult<IReadOnlyList<OccupancySnapshot>>([]);
         }
 
         var basePercent = 20 + ((index * 13) % 61);
-        var observations = new List<OccupancyObservation>(72);
+        var snapshots = new List<OccupancySnapshot>(72);
         for (var hoursAgo = 1; hoursAgo <= 72; hoursAgo++)
         {
+            var snapshotTime = toInclusive.AddHours(-hoursAgo);
+            if (snapshotTime < fromInclusive || snapshotTime > toInclusive)
+            {
+                continue;
+            }
+
             var wave = (int)Math.Round(8 * Math.Sin((hoursAgo + index) / 5.0));
             var percent = Math.Clamp(basePercent + wave, 5, 98);
-            observations.Add(new OccupancyObservation
+            snapshots.Add(new OccupancySnapshot
             {
-                SnapshotTime = asOf.AddHours(-hoursAgo),
+                CarParkCode = CodeFor(index),
+                SnapshotTime = snapshotTime,
+                CountingCategory = null,
                 Capacity = 200,
                 Occupied = percent * 2
             });
         }
 
-        return Task.FromResult<IReadOnlyList<OccupancyObservation>>(observations);
+        return Task.FromResult<IReadOnlyList<OccupancySnapshot>>(snapshots);
     }
 
     public static string CodeFor(int index) => $"CP{index:00}";

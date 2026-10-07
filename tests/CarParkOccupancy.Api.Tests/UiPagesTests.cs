@@ -3,15 +3,18 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using CarParkOccupancy.Api.Data;
 using CarParkOccupancy.Api.Models;
+using CarParkOccupancy.Api.Options;
 using CarParkOccupancy.Api.Ui;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Options;
 
 namespace CarParkOccupancy.Api.Tests;
 
+[Collection("ApiHost")]
 public sealed class UiPagesTests
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
@@ -201,6 +204,7 @@ public sealed class UiPagesTests
             _forceSqlStore = forceSqlStore;
             _sampleSnapshots = sampleSnapshots;
             Environment.SetEnvironmentVariable("Ui__ApiTimeoutSeconds", "15");
+            Environment.SetEnvironmentVariable("CarParkData__Source", null);
             Environment.SetEnvironmentVariable(
                 "CarParkData__UseSampleSnapshots",
                 sampleSnapshots ? "true" : null);
@@ -231,7 +235,13 @@ public sealed class UiPagesTests
                     }
                     else
                     {
-                        services.AddScoped<ICarParkReadStore, DapperCarParkReadStore>();
+                        services.RemoveAll<IOccupancySnapshotSource>();
+                        services.RemoveAll<IDbConnectionFactory>();
+                        services.RemoveAll<SqlObjectNames>();
+                        services.AddSingleton<IDbConnectionFactory, SqlConnectionFactory>();
+                        services.AddSingleton(sp => new SqlObjectNames(sp.GetRequiredService<IOptions<CarParkDataOptions>>().Value));
+                        services.AddScoped<IOccupancySnapshotSource, SqlServerOccupancySnapshotSource>();
+                        services.AddScoped<ICarParkReadStore, OccupancySnapshotReadStore>();
                     }
                 });
             }

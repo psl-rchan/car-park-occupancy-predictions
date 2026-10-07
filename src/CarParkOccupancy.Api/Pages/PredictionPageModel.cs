@@ -28,7 +28,7 @@ public abstract class PredictionPageModel : PageModel
     {
         ErrorMessage = exception.Message;
         Response.StatusCode = exception.StatusCode;
-        if (exception.StatusCode == StatusCodes.Status503ServiceUnavailable)
+        if (exception.StatusCode is StatusCodes.Status502BadGateway or StatusCodes.Status503ServiceUnavailable)
         {
             DataUnavailable = true;
         }
