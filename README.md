@@ -2,7 +2,7 @@
 
 **Target framework: `net10.0`.** This is an ASP.NET Core Web API on the .NET 10 SDK.
 
-The API serves about 50 car parks. Each park has about a year of occupancy snapshots in SQL Server. It predicts the occupancy rate for the next 1–6 hours, one value per hour, for a single car park. A web page can call this API later. This repository is the solution, the HTTP API, and the pluggable prediction services.
+The API serves about 50 car parks. Each park has about a year of occupancy snapshots in SQL Server. It predicts the occupancy rate for the next 1–6 hours, one value per hour, for a single car park. The same process serves a Razor Pages UI that calls these endpoints. This repository is the solution, the web UI, the HTTP API, and the pluggable prediction services.
 
 Occupancy in every response is a **percent of capacity on a 0–100 scale** (0 empty, 100 full). The field is `predictedOccupancyPercent`. It is not a 0–1 fraction. The payload also includes `occupancyPercentScale` with the value `"0-100"`.
 
@@ -17,6 +17,23 @@ dotnet run --project src/CarParkOccupancy.Api
 ```
 
 The development URL is `http://localhost:5080`. OpenAPI is served at `http://localhost:5080/openapi/v1.json`.
+
+### Web UI
+
+`dotnet run` serves the pages and the API on the same host. The pages call the HTTP API (they do not read SQL themselves).
+
+- Dashboard: [http://localhost:5080/](http://localhost:5080/) — car parks and predicted occupancy for hours 1–6. It calls `GET /api/carparks` and `POST /api/carparks/predictions`.
+- One car park: `http://localhost:5080/carparks/{code}` — bar chart and table, including `generatedAt` and `method`. It calls `GET /api/carparks/{code}/predictions`.
+
+When `ConnectionStrings:CarParkDb` is missing, or SQL Server cannot be queried, those API calls return HTTP 503 and the page explains that car park data is unavailable. The page does not show the connection string.
+
+To click through the UI without SQL Server, turn on Development sample snapshots. This is ignored when a connection string is set, and it is ignored outside Development:
+
+```bash
+ASPNETCORE_ENVIRONMENT=Development CarParkData__UseSampleSnapshots=true dotnet run --project src/CarParkOccupancy.Api
+```
+
+Open `http://localhost:5080/`. The page shows a sample-data banner. Leave `CarParkData:UseSampleSnapshots` false (the committed default) when you want the 503 message or a real database.
 
 `global.json` asks for the .NET 10 SDK (`10.0.100`, roll forward to the latest 10.0 feature band). Project files set `<TargetFramework>net10.0</TargetFramework>`.
 
@@ -168,6 +185,8 @@ docker run --rm -p 8080:8080 \
   carpark-occupancy-api
 ```
 
+The UI is on `http://localhost:8080/`. Data pages return HTTP 503 until the connection string is set.
+
 ### Data access
 
 Reads go through Dapper and `Microsoft.Data.SqlClient`. The table already exists in the stakeholder database, and the table and column names are configuration, so the API does not ship EF Core migrations. Identifiers from configuration are allow-listed before they are composed into SQL. Filter values are parameters.
@@ -184,7 +203,7 @@ dotnet test CarParkOccupancy.slnx
 
 **目標框架：`net10.0`。** 呢個係 .NET 10 上面嘅 ASP.NET Core Web API。
 
-大約 50 個停車場，每個約有一年佔用快照（SQL Server）。API 預測未來 1 至 6 小時、每小時一個佔用率。網頁之後先至接上嚟。呢個 repo 包括 solution、HTTP API，同可替換嘅預測服務。
+大約 50 個停車場，每個約有一年佔用快照（SQL Server）。API 預測未來 1 至 6 小時、每小時一個佔用率。同一個行程會同時提供 Razor Pages 介面，介面會呼叫呢啲端點。呢個 repo 包括 solution、網頁、HTTP API，同可替換嘅預測服務。
 
 所有回應入面嘅佔用率都係**容量百分比，刻度 0–100**（0 代表空，100 代表滿）。欄位名係 `predictedOccupancyPercent`，唔係 0–1 分數。回應亦有 `occupancyPercentScale`，值係 `"0-100"`。
 
@@ -197,6 +216,23 @@ dotnet run --project src/CarParkOccupancy.Api
 ```
 
 開發網址係 `http://localhost:5080`。OpenAPI 文件係 `http://localhost:5080/openapi/v1.json`。
+
+### 網頁
+
+`dotnet run` 同一個 host 提供網頁同 API。網頁經 HTTP 呼叫 API，唔會自己讀 SQL。
+
+- 總覽：[http://localhost:5080/](http://localhost:5080/) — 停車場列表同未來 1–6 小時預測佔用率。呼叫 `GET /api/carparks` 同 `POST /api/carparks/predictions`。
+- 單一停車場：`http://localhost:5080/carparks/{code}` — 棒形圖同表格，顯示 `generatedAt` 同 `method`。呼叫 `GET /api/carparks/{code}/predictions`。
+
+未設定 `ConnectionStrings:CarParkDb`，或者 SQL Server 查詢失敗時，API 回 HTTP 503，頁面會說明而家讀唔到停車場資料，亦唔會顯示連線字串。
+
+冇 SQL Server 又想撳吓介面，可以喺 Development 開示範快照。已設定連線字串，或者唔係 Development，呢個開關會被忽略：
+
+```bash
+ASPNETCORE_ENVIRONMENT=Development CarParkData__UseSampleSnapshots=true dotnet run --project src/CarParkOccupancy.Api
+```
+
+然後開 `http://localhost:5080/`。頁面會標明呢啲係示範數據。要用真實資料或者睇 503 提示，保持 `CarParkData:UseSampleSnapshots` 為 false（repo 預設）。
 
 `global.json` 指定 .NET 10 SDK。各 csproj 嘅 `<TargetFramework>` 係 `net10.0`。
 
@@ -259,6 +295,8 @@ docker run --rm -p 8080:8080 \
   -e ConnectionStrings__CarParkDb="Server=...;Database=...;User Id=...;Password=...;Encrypt=True" \
   carpark-occupancy-api
 ```
+
+網頁係 `http://localhost:8080/`。未設定連線字串時，資料頁會顯示 HTTP 503 說明。
 
 ### 資料存取
 

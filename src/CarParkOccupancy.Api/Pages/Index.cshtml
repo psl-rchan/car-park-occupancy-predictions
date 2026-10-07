@@ -1,0 +1,106 @@
+@page "/"
+@model IndexModel
+@{
+    ViewData["Title"] = "停車場佔用預測 · Car park occupancy";
+}
+
+<partial name="_ApiAlerts" model="Model" />
+
+@if (!Model.DataUnavailable && !Model.ApiUnreachable)
+{
+    <div class="page-head">
+        <div>
+            <h1>未來 1–6 小時 <span>Next 1–6 hours</span></h1>
+            <p class="lede">每個停車場嘅預測佔用率，刻度 0–100。Predicted occupancy for each car park.</p>
+        </div>
+        <a class="button" href="/">重新整理 Refresh</a>
+    </div>
+
+    @if (Model.Rows.Count == 0)
+    {
+        <section class="banner" data-testid="empty-carparks">
+            <h2>未有停車場 · No car parks</h2>
+            <p>API 冇返回任何代號。The prediction API returned an empty car park list.</p>
+        </section>
+    }
+    else
+    {
+        <div class="meta-row">
+            @if (Model.GeneratedAt is DateTimeOffset generatedAt)
+            {
+                <p class="meta">
+                    <span>產生時間 Generated at</span>
+                    <time data-testid="generated-at" datetime="@OccupancyDisplay.FormatIso(generatedAt)">@OccupancyDisplay.FormatHongKong(generatedAt)</time>
+                </p>
+            }
+            @if (!string.IsNullOrWhiteSpace(Model.MethodSummary))
+            {
+                <p class="meta">
+                    <span>方法 Method</span>
+                    <strong data-testid="method">@Model.MethodSummary</strong>
+                </p>
+            }
+            <p class="meta">
+                <span>刻度 Scale</span>
+                <span data-testid="scale">@Model.Scale</span>
+            </p>
+        </div>
+
+        <div class="toolbar">
+            <label class="filter" for="park-filter">搜尋 Search
+                <input id="park-filter" type="search" placeholder="CP01" autocomplete="off" />
+            </label>
+            <p class="count" aria-live="polite">
+                <span id="shown-count">@Model.Rows.Count</span> / <span id="total-count">@Model.Rows.Count</span>
+                <span class="muted">停車場 car parks</span>
+            </p>
+            <ul class="legend">
+                <li><i class="swatch is-quiet"></i>低於 60%</li>
+                <li><i class="swatch is-busy"></i>60–85%</li>
+                <li><i class="swatch is-full"></i>85%+</li>
+            </ul>
+        </div>
+
+        <div class="table-scroll">
+            <table class="grid" data-testid="prediction-grid">
+                <caption>未來 1–6 小時預測佔用率 · Predicted occupancy percent</caption>
+                <thead>
+                    <tr>
+                        <th scope="col">停車場 Car park</th>
+                        @foreach (var horizon in Model.Horizons)
+                        {
+                            <th scope="col">+@(horizon)h</th>
+                        }
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var row in Model.Rows)
+                    {
+                        <tr data-car-park="@row.Code">
+                            <th scope="row">
+                                <a asp-page="/CarPark" asp-route-code="@row.Code">@row.Code</a>
+                            </th>
+                            @if (!row.Found)
+                            {
+                                <td class="missing" colspan="@Model.Horizons.Count">@row.Error</td>
+                            }
+                            else
+                            {
+                                @foreach (var horizon in Model.Horizons)
+                                {
+                                    var point = OccupancyDisplay.AtHorizon(row.Predictions, horizon);
+                                    <td class="occ" data-horizon="@horizon">
+                                        <span class="occ-value">@OccupancyDisplay.FormatPercent(point?.PredictedOccupancyPercent)</span>
+                                        <span class="occ-track" aria-hidden="true">
+                                            <span class="occ-bar @OccupancyDisplay.LevelClass(point?.PredictedOccupancyPercent)" style="width: @OccupancyDisplay.BarWidth(point?.PredictedOccupancyPercent)"></span>
+                                        </span>
+                                    </td>
+                                }
+                            }
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+}
