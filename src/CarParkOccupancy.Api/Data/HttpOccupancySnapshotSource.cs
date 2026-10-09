@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Net.Http.Headers;
+using System.Text.Json;
 using CarParkOccupancy.Api.Models;
 using CarParkOccupancy.Api.Options;
 using CarParkOccupancy.Api.Services.Prediction;
@@ -8,16 +9,10 @@ using Microsoft.Extensions.Options;
 namespace CarParkOccupancy.Api.Data;
 
 /// <summary>
-/// Typed HTTP client for a third-party occupancy API. The provider has not published
-/// a URL or contract yet, so the base URL, optional auth header, path, and JSON names
-/// are configuration. Secrets stay in environment variables or user secrets.
+/// Typed HTTP client for car-park-occupancy-data-api. History is restricted to dates before today UTC.
 /// </summary>
 public sealed class HttpOccupancySnapshotSource : IOccupancySnapshotSource
 {
-    public const string CarParkCodeParameter = "carParkCode";
-
-    public const string CountingCategoryParameter = "countingCategory";
-
     public const string FromParameter = "from";
 
     public const string ToParameter = "to";
@@ -42,12 +37,27 @@ public sealed class HttpOccupancySnapshotSource : IOccupancySnapshotSource
 
     public async Task<IReadOnlyList<string>> GetCarParkCodesAsync(CancellationToken cancellationToken)
     {
-        var (from, to) = LookbackWindow(DateTimeOffset.UtcNow);
-        var snapshots = await FetchAsync(null, null, from, to, cancellationToken);
-        return snapshots
-            .Where(snapshot => snapshot.SnapshotTime >= from && snapshot.SnapshotTime <= to)
-            .Select(snapshot => snapshot.CarParkCode)
-            .Where(code => !string.IsNullOrWhiteSpace(code))
+        var payload = await FetchAsync(BuildRequestUri(_options.Http.CarParksPath), cancellationToken);
+        using var document = ParseDocument(payload);
+        if (document.RootElement.ValueKind != JsonValueKind.Array)
+        {
+            throw BadJson("The occupancy data API car park list must be an array.");
+        }
+
+        var codes = new List<string>();
+        foreach (var item in document.RootElement.EnumerateArray())
+        {
+            if (!OccupancySnapshotJson.TryFind(item, "carParkCode", out var value)
+                || value.ValueKind != JsonValueKind.String
+                || string.IsNullOrWhiteSpace(value.GetString()))
+            {
+                throw BadJson("The occupancy data API car park list is missing 'carParkCode'.");
+            }
+
+            codes.Add(value.GetString()!.Trim());
+        }
+
+        return codes
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(code => code, StringComparer.OrdinalIgnoreCase)
             .ToArray();
@@ -55,8 +65,9 @@ public sealed class HttpOccupancySnapshotSource : IOccupancySnapshotSource
 
     public async Task<bool> ExistsAsync(string carParkCode, CancellationToken cancellationToken)
     {
-        var (from, to) = LookbackWindow(DateTimeOffset.UtcNow);
-        var snapshots = await GetSnapshotsAsync(carParkCode, null, from, to, cancellationToken);
+        var path = PathForCode(_options.Http.LatestPathTemplate, carParkCode.Trim());
+        var payload = await FetchAsync(BuildRequestUri(path), cancellationToken);
+        var snapshots = ReadSnapshots(payload);
         return snapshots.Count > 0;
     }
 
@@ -69,29 +80,72 @@ public sealed class HttpOccupancySnapshotSource : IOccupancySnapshotSource
     {
         var code = carParkCode.Trim();
         var category = string.IsNullOrWhiteSpace(countingCategory) ? null : countingCategory.Trim();
-        var snapshots = await FetchAsync(code, category, fromInclusive, toInclusive, cancellationToken);
+        var utcToday = new DateTimeOffset(DateTime.UtcNow.Date, TimeSpan.Zero);
+        if (fromInclusive >= utcToday || fromInclusive > toInclusive)
+        {
+            return [];
+        }
+
+        var to = toInclusive >= utcToday ? utcToday.AddMilliseconds(-1) : toInclusive.ToUniversalTime();
+        if (fromInclusive > to)
+        {
+            return [];
+        }
+
+        var snapshots = new List<OccupancySnapshot>();
+        var path = PathForCode(_options.Http.HistoryPathTemplate, code);
+        for (var page = 1; page <= _options.Http.MaxPages; page++)
+        {
+            var pairs = new List<string>();
+            AddQuery(pairs, FromParameter, FormatInstant(fromInclusive));
+            AddQuery(pairs, ToParameter, FormatInstant(to));
+            AddQuery(pairs, "page", page.ToString(CultureInfo.InvariantCulture));
+            AddQuery(pairs, "pageSize", _options.Http.PageSize.ToString(CultureInfo.InvariantCulture));
+            AddQuery(pairs, "sampleEverySeconds", _options.Http.SampleEverySeconds.ToString(CultureInfo.InvariantCulture));
+            AddQuery(pairs, _options.Http.CategoryQueryParameter, category);
+            var payload = await FetchAsync(BuildRequestUri(path, pairs), cancellationToken);
+            var items = ReadSnapshots(payload);
+            snapshots.AddRange(items);
+
+            using var document = ParseDocument(payload);
+            var itemCount = items.Count;
+            if (OccupancySnapshotJson.TryFind(document.RootElement, "itemCount", out var count))
+            {
+                if (count.ValueKind != JsonValueKind.Number || !count.TryGetInt32(out itemCount) || itemCount < 0)
+                {
+                    throw BadJson("The occupancy data API 'itemCount' must be a non-negative integer.");
+                }
+            }
+
+            if (items.Count == 0
+                || (itemCount != _options.Http.PageSize && itemCount < (long)page * _options.Http.PageSize))
+            {
+                break;
+            }
+
+            if (page == _options.Http.MaxPages)
+            {
+                _logger.LogWarning("Occupancy data API history reached MaxPages ({MaxPages}); history may be truncated.",
+                    _options.Http.MaxPages);
+                break;
+            }
+        }
+
         return snapshots
             .Where(snapshot => snapshot.CarParkCode.Equals(code, StringComparison.OrdinalIgnoreCase))
             .Where(snapshot => category is null
                 || string.Equals(snapshot.CountingCategory, category, StringComparison.OrdinalIgnoreCase))
-            .Where(snapshot => snapshot.SnapshotTime >= fromInclusive && snapshot.SnapshotTime <= toInclusive)
+            .Where(snapshot => snapshot.SnapshotTime >= fromInclusive && snapshot.SnapshotTime <= to)
             .ToArray();
     }
 
-    private (DateTimeOffset From, DateTimeOffset To) LookbackWindow(DateTimeOffset to)
-    {
-        var days = Math.Max(1, _options.HistoryLookbackDays);
-        return (to.AddDays(-days), to.AddDays(1));
-    }
+    private IReadOnlyList<OccupancySnapshot> ReadSnapshots(string payload) =>
+        OccupancySnapshotJson.Read(payload, _options.Http.Json, _options.SnapshotTimeIsUtc, _timeZone);
 
-    private async Task<IReadOnlyList<OccupancySnapshot>> FetchAsync(
-        string? carParkCode,
-        string? countingCategory,
-        DateTimeOffset? from,
-        DateTimeOffset? to,
+    private async Task<string> FetchAsync(
+        Uri requestUri,
         CancellationToken cancellationToken)
     {
-        var requestUri = BuildRequestUri(carParkCode, countingCategory, from, to);
         using var request = new HttpRequestMessage(HttpMethod.Get, requestUri);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         AddAuthHeader(request);
@@ -99,7 +153,7 @@ public sealed class HttpOccupancySnapshotSource : IOccupancySnapshotSource
         HttpResponseMessage response;
         try
         {
-            response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            response = await _http.SendAsync(request, HttpCompletionOption.ResponseContentRead, cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -133,44 +187,44 @@ public sealed class HttpOccupancySnapshotSource : IOccupancySnapshotSource
                     CarParkDataUnavailableException.BadGatewayStatus);
             }
 
-            var payload = await response.Content.ReadAsStringAsync(cancellationToken);
-            var snapshots = OccupancySnapshotJson.Read(
-                payload,
-                _options.Http.Json,
-                _options.SnapshotTimeIsUtc,
-                _timeZone);
-
-            _logger.LogDebug("Occupancy HTTP API returned {Count} snapshots.", snapshots.Count);
-            return snapshots;
+            return await response.Content.ReadAsStringAsync(cancellationToken);
         }
     }
 
-    private Uri BuildRequestUri(
-        string? carParkCode,
-        string? countingCategory,
-        DateTimeOffset? from,
-        DateTimeOffset? to)
+    private Uri BuildRequestUri(string path, List<string>? pairs = null)
     {
         var baseUrl = _options.Http.BaseUrl?.Trim() ?? string.Empty;
         if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var baseUri)
             || (baseUri.Scheme != Uri.UriSchemeHttps && baseUri.Scheme != Uri.UriSchemeHttp))
         {
             throw new CarParkDataUnavailableException(
-                "CarParkData:Http:BaseUrl is not configured. The third-party occupancy API URL is not set yet.");
+                "CarParkData:Http:BaseUrl must be configured with the occupancy data API URL (default http://localhost:5095).");
         }
 
-        var path = (_options.Http.SnapshotsPath ?? string.Empty).Trim().TrimStart('/');
         var root = baseUri.AbsoluteUri.EndsWith('/') ? baseUri : new Uri(baseUri.AbsoluteUri + "/");
         var combined = new Uri(root, path);
         var builder = new UriBuilder(combined);
-        var pairs = new List<string>(4);
-        AddQuery(pairs, CarParkCodeParameter, carParkCode);
-        AddQuery(pairs, CountingCategoryParameter, countingCategory);
-        AddQuery(pairs, FromParameter, FormatInstant(from));
-        AddQuery(pairs, ToParameter, FormatInstant(to));
-        builder.Query = string.Join("&", pairs);
+        builder.Query = pairs is null ? string.Empty : string.Join("&", pairs);
         return builder.Uri;
     }
+
+    private static string PathForCode(string template, string code) =>
+        template.Replace("{code}", Uri.EscapeDataString(code), StringComparison.Ordinal);
+
+    private static JsonDocument ParseDocument(string payload)
+    {
+        try
+        {
+            return JsonDocument.Parse(payload);
+        }
+        catch (JsonException)
+        {
+            throw BadJson("The occupancy data API returned invalid JSON.");
+        }
+    }
+
+    private static CarParkDataUnavailableException BadJson(string message) =>
+        new(message, CarParkDataUnavailableException.BadGatewayStatus);
 
     private void AddAuthHeader(HttpRequestMessage request)
     {

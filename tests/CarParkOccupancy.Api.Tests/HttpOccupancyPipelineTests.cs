@@ -25,7 +25,12 @@ public sealed class HttpOccupancyPipelineTests
     [Fact]
     public async Task Prediction_and_dashboard_use_http_snapshots()
     {
-        var handler = new RecordingHandler(_ => JsonResponse(SnapshotJson()));
+        var handler = new RecordingHandler(request => JsonResponse(
+            request.RequestUri!.AbsolutePath.EndsWith("/api/carparks", StringComparison.Ordinal)
+                ? """[{"carParkCode":"CP001","carparkNumber":1},{"carParkCode":"CP002","carparkNumber":2}]"""
+                : request.RequestUri.AbsolutePath.EndsWith("/latest", StringComparison.Ordinal)
+                    ? SnapshotJson()
+                    : """{"page":1,"pageSize":1000,"itemCount":16,"items":""" + SnapshotJson() + "}"));
         await using var factory = new HttpApiFactory("https://occupancy.example/v1", handler);
         using var client = factory.CreateClient();
 
@@ -93,7 +98,7 @@ public sealed class HttpOccupancyPipelineTests
 
     private static string SnapshotJson()
     {
-        var start = DateTimeOffset.UtcNow.AddHours(-8);
+        var start = new DateTimeOffset(DateTime.UtcNow.Date, TimeSpan.Zero).AddHours(-8);
         var rows = new List<string>();
         for (var hour = 0; hour < 8; hour++)
         {

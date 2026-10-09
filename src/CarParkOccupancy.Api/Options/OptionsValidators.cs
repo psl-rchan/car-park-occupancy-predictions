@@ -87,14 +87,47 @@ public sealed class CarParkDataOptionsValidator : IValidateOptions<CarParkDataOp
             return "CarParkData:Http:BaseUrl must be an absolute http or https URL when it is set.";
         }
 
-        if (string.IsNullOrWhiteSpace(http.SnapshotsPath)
-            || http.SnapshotsPath.Contains("://", StringComparison.Ordinal)
-            || http.SnapshotsPath.Contains('?', StringComparison.Ordinal)
-            || http.SnapshotsPath.Contains('#', StringComparison.Ordinal)
-            || http.SnapshotsPath.Contains("..", StringComparison.Ordinal)
-            || http.SnapshotsPath.Any(char.IsControl))
+        foreach (var (field, path) in new[]
         {
-            return "CarParkData:Http:SnapshotsPath must be a relative path.";
+            (nameof(http.CarParksPath), http.CarParksPath),
+            (nameof(http.HistoryPathTemplate), http.HistoryPathTemplate),
+            (nameof(http.LatestPathTemplate), http.LatestPathTemplate),
+            (nameof(http.LatestAllPath), http.LatestAllPath)
+        })
+        {
+            if (string.IsNullOrWhiteSpace(path)
+                || path.StartsWith('/')
+                || path.Contains(':')
+                || path.Contains('\\')
+                || path.Contains('?')
+                || path.Contains('#')
+                || path.Contains("..", StringComparison.Ordinal)
+                || path.Any(char.IsControl))
+            {
+                return $"CarParkData:Http:{field} must be a relative path.";
+            }
+        }
+
+        if (!http.HistoryPathTemplate.Contains("{code}", StringComparison.Ordinal)
+            || !http.LatestPathTemplate.Contains("{code}", StringComparison.Ordinal))
+        {
+            return "CarParkData:Http:HistoryPathTemplate and LatestPathTemplate must contain '{code}'.";
+        }
+
+        if (http.PageSize is < 1 or > 1000)
+        {
+            return "CarParkData:Http:PageSize must be between 1 and 1000.";
+        }
+
+        if (http.SampleEverySeconds < 1 || http.MaxPages < 1)
+        {
+            return "CarParkData:Http:SampleEverySeconds and MaxPages must be at least 1.";
+        }
+
+        if (string.IsNullOrWhiteSpace(http.CategoryQueryParameter)
+            || http.CategoryQueryParameter.Any(char.IsControl))
+        {
+            return "CarParkData:Http:CategoryQueryParameter must not be empty or contain control characters.";
         }
 
         var headerName = http.AuthHeaderName?.Trim() ?? string.Empty;

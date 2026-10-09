@@ -1,9 +1,13 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using CarParkOccupancy.Api.Data;
 using CarParkOccupancy.Api.Options;
 using CarParkOccupancy.Api.Services.Prediction;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Hosting.Internal;
 
 namespace CarParkOccupancy.Api.Tests;
 
@@ -51,11 +55,12 @@ public sealed class HttpOccupancySnapshotSourceTests
         Assert.Null(other.CountingCategory);
 
         var request = fixture.Handler.Captured[0];
-        Assert.StartsWith("https://occupancy.example/v1/occupancy-snapshots?", request.Uri.AbsoluteUri, StringComparison.Ordinal);
-        Assert.Contains("carParkCode=CP001", request.Uri.Query, StringComparison.Ordinal);
-        Assert.Contains("countingCategory=PrivateCar", request.Uri.Query, StringComparison.Ordinal);
-        Assert.Contains("from=", request.Uri.Query, StringComparison.Ordinal);
-        Assert.Contains("to=", request.Uri.Query, StringComparison.Ordinal);
+        Assert.Equal("http://localhost:5095/api/carparks/CP001/occupancy", request.Uri.GetLeftPart(UriPartial.Path));
+        Assert.Equal(
+            $"?from={Uri.EscapeDataString(from.ToString("O"))}&to={Uri.EscapeDataString(to.ToString("O"))}&page=1&pageSize=1000&sampleEverySeconds=300&category=PrivateCar",
+            request.Uri.Query);
+        Assert.DoesNotContain("carParkCode=", request.Uri.Query, StringComparison.Ordinal);
+        Assert.DoesNotContain("countingCategory=", request.Uri.Query, StringComparison.Ordinal);
         Assert.Equal(Secret, request.AuthHeader);
         Assert.DoesNotContain(Secret, request.Uri.AbsoluteUri, StringComparison.Ordinal);
     }
@@ -112,7 +117,7 @@ public sealed class HttpOccupancySnapshotSourceTests
     {
         const string json = """
             {
-              "snapshots": [
+              "items": [
                 {
                   "carParkCode": "CP001",
                   "snapshotTime": "2026-10-07T01:00:00Z",
@@ -153,27 +158,9 @@ public sealed class HttpOccupancySnapshotSourceTests
     {
         const string json = """
             [
-              {
-                "CarParkCode": "CP002",
-                "SnapshotTime": "2026-10-07T01:00:00Z",
-                "CountingCategory": "PrivateCar",
-                "Capacity": 10,
-                "Occupied": 1
-              },
-              {
-                "CarParkCode": "cp001",
-                "SnapshotTime": "2026-10-07T01:00:00Z",
-                "CountingCategory": "PrivateCar",
-                "Capacity": 10,
-                "Occupied": 1
-              },
-              {
-                "CarParkCode": "CP001",
-                "SnapshotTime": "2026-10-07T02:00:00Z",
-                "CountingCategory": "PrivateCar",
-                "Capacity": 10,
-                "Occupied": 1
-              }
+              { "carParkCode": "CP002", "carparkNumber": 2 },
+              { "CarParkCode": "cp001", "carparkNumber": 1 },
+              { "CARPARKCODE": "CP001", "carparkNumber": 1 }
             ]
             """;
 
@@ -181,7 +168,188 @@ public sealed class HttpOccupancySnapshotSourceTests
         var codes = await fixture.Source.GetCarParkCodesAsync(CancellationToken.None);
 
         Assert.Equal(["cp001", "CP002"], codes);
+        Assert.Equal("http://localhost:5095/api/carparks", Assert.Single(fixture.Handler.Captured).Uri.AbsoluteUri);
     }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Exists_uses_latest_snapshots(bool exists)
+    {
+        var json = exists
+            ? """[{"carParkCode":"CP001","snapshotTime":"2026-10-07T01:00:00Z","capacity":100,"occupied":37}]"""
+            : "[]";
+        using var fixture = Fixture.Json(json);
+
+        Assert.Equal(exists, await fixture.Source.ExistsAsync("CP001", CancellationToken.None));
+        Assert.Equal("http://localhost:5095/api/carparks/CP001/occupancy/latest",
+            Assert.Single(fixture.Handler.Captured).Uri.AbsoluteUri);
+    }
+
+    [Fact]
+    public async Task Clamps_history_to_end_of_yesterday_utc_and_filters_rows()
+    {
+        var today = new DateTimeOffset(DateTime.UtcNow.Date, TimeSpan.Zero);
+        var yesterday = today.AddMilliseconds(-1);
+        var json = JsonSerializer.Serialize(new[]
+        {
+            new { carParkCode = "CP001", snapshotTime = yesterday, countingCategory = "PrivateCar", capacity = 100, occupied = 37 },
+            new { carParkCode = "CP001", snapshotTime = today, countingCategory = "PrivateCar", capacity = 100, occupied = 99 },
+            new { carParkCode = "CP002", snapshotTime = yesterday, countingCategory = "PrivateCar", capacity = 100, occupied = 99 },
+            new { carParkCode = "CP001", snapshotTime = yesterday, countingCategory = "Lorry", capacity = 100, occupied = 99 },
+            new { carParkCode = "CP001", snapshotTime = today.AddDays(-3), countingCategory = "PrivateCar", capacity = 100, occupied = 99 }
+        });
+        using var fixture = Fixture.Json(json);
+
+        var snapshots = await fixture.Source.GetSnapshotsAsync("CP001", "PrivateCar",
+            today.AddDays(-2).ToOffset(TimeSpan.FromHours(8)), today.ToOffset(TimeSpan.FromHours(8)), CancellationToken.None);
+
+        Assert.Equal(yesterday, Assert.Single(snapshots).SnapshotTime);
+        Assert.Contains($"to={Uri.EscapeDataString(yesterday.ToString("O"))}",
+            Assert.Single(fixture.Handler.Captured).Uri.Query, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    public async Task Today_or_future_window_does_not_call_api(int days)
+    {
+        var from = new DateTimeOffset(DateTime.UtcNow.Date, TimeSpan.Zero).AddDays(days);
+        using var fixture = Fixture.Json("[]");
+
+        Assert.Empty(await fixture.Source.GetSnapshotsAsync("CP001", null, from, from.AddHours(6), CancellationToken.None));
+        Assert.Empty(fixture.Handler.Captured);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Merges_paged_items_until_short_page(bool totalItemCount)
+    {
+        var options = Fixture.DefaultOptions();
+        options.Http.PageSize = 2;
+        using var fixture = Fixture.Pages(
+        [
+            $$"""{"page":1,"pageSize":2,"itemCount":{{(totalItemCount ? 3 : 2)}},"items":[{"carParkCode":"CP001","snapshotTime":"2026-10-06T01:00:00Z","capacity":100,"occupied":10},{"carParkCode":"CP001","snapshotTime":"2026-10-06T02:00:00Z","capacity":100,"occupied":20}]}""",
+            $$"""{"page":2,"pageSize":2,"itemCount":{{(totalItemCount ? 3 : 1)}},"items":[{"carParkCode":"CP001","snapshotTime":"2026-10-06T03:00:00Z","capacity":100,"occupied":30}]}"""
+        ], options);
+
+        var snapshots = await fixture.Source.GetSnapshotsAsync("CP001", null,
+            DateTimeOffset.UnixEpoch, DateTimeOffset.UtcNow, CancellationToken.None);
+
+        Assert.Equal([10, 20, 30], snapshots.Select(snapshot => snapshot.Occupied));
+        Assert.Equal(2, fixture.Handler.Captured.Count);
+        Assert.Contains("page=1&pageSize=2&sampleEverySeconds=300", fixture.Handler.Captured[0].Uri.Query);
+        Assert.Contains("page=2&pageSize=2&sampleEverySeconds=300", fixture.Handler.Captured[1].Uri.Query);
+        Assert.DoesNotContain("category=", fixture.Handler.Captured[0].Uri.Query);
+    }
+
+    [Fact]
+    public async Task Stops_at_max_pages()
+    {
+        var options = Fixture.DefaultOptions();
+        options.Http.PageSize = 1;
+        options.Http.MaxPages = 2;
+        using var fixture = Fixture.Json(
+            """{"itemCount":1,"items":[{"carParkCode":"CP001","snapshotTime":"2026-10-06T01:00:00Z","capacity":100,"occupied":10}]}""", options);
+
+        Assert.Equal(2, (await fixture.Source.GetSnapshotsAsync("CP001", null,
+            DateTimeOffset.UnixEpoch, DateTimeOffset.UtcNow, CancellationToken.None)).Count);
+        Assert.Equal(2, fixture.Handler.Captured.Count);
+    }
+
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("[{}]")]
+    [InlineData("{not-json")]
+    public async Task Invalid_car_park_list_is_502(string json)
+    {
+        using var fixture = Fixture.Json(json);
+        var error = await Assert.ThrowsAsync<CarParkDataUnavailableException>(() =>
+            fixture.Source.GetCarParkCodesAsync(CancellationToken.None));
+        Assert.Equal(CarParkDataUnavailableException.BadGatewayStatus, error.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("\"invalid\"")]
+    [InlineData("-1")]
+    [InlineData("null")]
+    public async Task Invalid_page_item_count_is_502(string itemCount)
+    {
+        using var fixture = Fixture.Json($$"""{"itemCount":{{itemCount}},"items":[]}""");
+        var error = await Assert.ThrowsAsync<CarParkDataUnavailableException>(() =>
+            fixture.Source.GetSnapshotsAsync("CP001", null, DateTimeOffset.UnixEpoch, DateTimeOffset.UtcNow, CancellationToken.None));
+        Assert.Equal(CarParkDataUnavailableException.BadGatewayStatus, error.StatusCode);
+    }
+
+    [Fact]
+    public async Task Escapes_code_and_configurable_category_query_parameter()
+    {
+        var options = Fixture.DefaultOptions();
+        options.Http.CategoryQueryParameter = "vehicleType";
+        using var fixture = Fixture.Json("[]", options);
+
+        await fixture.Source.GetSnapshotsAsync("CP 001&x", "Private Car&Lorry",
+            DateTimeOffset.UnixEpoch, DateTimeOffset.UtcNow, CancellationToken.None);
+
+        var uri = Assert.Single(fixture.Handler.Captured).Uri;
+        Assert.Equal("/api/carparks/CP%20001%26x/occupancy", uri.AbsolutePath);
+        Assert.Contains("vehicleType=Private%20Car%26Lorry", uri.Query);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("/api/carparks")]
+    [InlineData("//remote.example/api")]
+    [InlineData("https://remote.example/api")]
+    [InlineData("../api/carparks")]
+    [InlineData("api\\carparks")]
+    [InlineData("api/carparks?x=1")]
+    [InlineData("api/carparks#x")]
+    [InlineData("api/\ncarparks")]
+    public void Options_reject_non_relative_paths(string path)
+    {
+        Action<HttpOccupancySourceOptions>[] setters =
+        [
+            options => options.CarParksPath = path,
+            options => options.HistoryPathTemplate = path,
+            options => options.LatestPathTemplate = path,
+            options => options.LatestAllPath = path
+        ];
+        foreach (var setPath in setters)
+        {
+            var options = Fixture.DefaultOptions();
+            setPath(options.Http);
+            var result = Validator().Validate(null, options);
+            Assert.False(result.Succeeded);
+            Assert.Contains("relative path", result.FailureMessage);
+        }
+    }
+
+    [Fact]
+    public void Options_require_code_templates_and_valid_paging()
+    {
+        Assert.True(Validator().Validate(null, Fixture.DefaultOptions()).Succeeded);
+        Action<HttpOccupancySourceOptions>[] invalidSettings =
+        [
+            options => options.HistoryPathTemplate = "api/carparks/occupancy",
+            options => options.LatestPathTemplate = "api/carparks/latest",
+            options => options.PageSize = 0,
+            options => options.PageSize = 1001,
+            options => options.SampleEverySeconds = 0,
+            options => options.MaxPages = 0,
+            options => options.CategoryQueryParameter = ""
+        ];
+        foreach (var setInvalid in invalidSettings)
+        {
+            var options = Fixture.DefaultOptions();
+            setInvalid(options.Http);
+            Assert.False(Validator().Validate(null, options).Succeeded);
+        }
+    }
+
+    private static CarParkDataOptionsValidator Validator() =>
+        new(new ConfigurationBuilder().Build(), new HostingEnvironment { EnvironmentName = Environments.Development });
 
     [Fact]
     public async Task Missing_base_url_is_503_and_does_not_call_the_remote_api()
@@ -344,14 +512,20 @@ public sealed class HttpOccupancySnapshotSourceTests
             return new Fixture(StubHandler.Delay(delay), options);
         }
 
+        public static Fixture Pages(string[] pages, CarParkDataOptions options) =>
+            new(StubHandler.Pages(pages), options);
+
         public static CarParkDataOptions DefaultOptions() => new()
         {
             HistoryLookbackDays = 400,
-            SnapshotTimeIsUtc = false,
+            SnapshotTimeIsUtc = true,
             Http = new HttpOccupancySourceOptions
             {
-                BaseUrl = "https://occupancy.example/v1",
-                SnapshotsPath = "occupancy-snapshots",
+                BaseUrl = "http://localhost:5095",
+                CarParksPath = "api/carparks",
+                HistoryPathTemplate = "api/carparks/{code}/occupancy",
+                LatestPathTemplate = "api/carparks/{code}/occupancy/latest",
+                LatestAllPath = "api/occupancy/latest",
                 TimeoutSeconds = 5
             }
         };
@@ -373,6 +547,12 @@ public sealed class HttpOccupancySnapshotSourceTests
         public List<CapturedRequest> Captured { get; } = [];
 
         public static StubHandler Json(string json) => new((_, _) => Task.FromResult(JsonResponse(json)));
+
+        public static StubHandler Pages(string[] pages)
+        {
+            var page = 0;
+            return new((_, _) => Task.FromResult(JsonResponse(pages[page++])));
+        }
 
         public static StubHandler Status(HttpStatusCode status) =>
             new((_, _) => Task.FromResult(new HttpResponseMessage(status)

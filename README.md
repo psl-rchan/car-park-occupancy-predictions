@@ -4,7 +4,7 @@
 
 The API serves about 50 car parks. Each park has about a year of occupancy snapshots. It predicts the occupancy rate for the next 1–6 hours, one value per hour, for a single car park. The same process serves a Razor Pages UI that calls these endpoints. This repository is the solution, the web UI, the HTTP API, and the pluggable prediction services.
 
-Snapshots are read through `IOccupancySnapshotSource`. SQL Server is the default. A third-party HTTP API can supply the same rows later; that provider has not published a URL or contract yet.
+Snapshots are read through `IOccupancySnapshotSource`. The default HTTP source consumes [car-park-occupancy-data-api](https://github.com/psl-rchan/car-park-occupancy-data-api) at `http://localhost:5095`. SQL Server and sample snapshots remain available.
 
 Occupancy in every response is a **percent of capacity on a 0–100 scale** (0 empty, 100 full). The field is `predictedOccupancyPercent`. It is not a 0–1 fraction. The payload also includes `occupancyPercentScale` with the value `"0-100"`.
 
@@ -20,6 +20,16 @@ dotnet run --project src/CarParkOccupancy.Api
 
 The development URL is `http://localhost:5080`. OpenAPI is served at `http://localhost:5080/openapi/v1.json`.
 
+Run the sibling data API in a separate terminal first, with its database configured according to its README:
+
+```bash
+cd /workspace/car-park-occupancy-data-api
+dotnet restore
+dotnet run --project src/CarParkOccupancy.DataApi --urls http://localhost:5095
+```
+
+Then run the predictions API from `/workspace/car-park-occupancy-predictions` using the commands above. The committed HTTP settings already point at port 5095.
+
 ### Web UI
 
 `dotnet run` serves the pages and the API on the same host. The pages call the HTTP API (they do not read SQL themselves).
@@ -32,10 +42,10 @@ When the selected snapshot source cannot be read, those API calls return HTTP 50
 To click through the UI without SQL Server, turn on Development sample snapshots. This is ignored when a connection string is set, and it is ignored outside Development:
 
 ```bash
-ASPNETCORE_ENVIRONMENT=Development CarParkData__UseSampleSnapshots=true dotnet run --project src/CarParkOccupancy.Api
+ASPNETCORE_ENVIRONMENT=Development CarParkData__Source=Sql CarParkData__UseSampleSnapshots=true dotnet run --project src/CarParkOccupancy.Api
 ```
 
-Open `http://localhost:5080/`. The page shows a sample-data banner. Leave `CarParkData:UseSampleSnapshots` false (the committed default) when you want the 503 message or a real database. `CarParkData:Source=Sample` forces that preview even when a connection string is set. See [Snapshot source](#snapshot-source).
+Open `http://localhost:5080/`. The page shows a sample-data banner. Leave `CarParkData:UseSampleSnapshots` false (the committed default) for real data. `CarParkData:Source=Sample` forces that preview even when a connection string is set. The default `Http` source ignores the sample flag. See [Snapshot source](#snapshot-source).
 
 `global.json` asks for the .NET 10 SDK (`10.0.100`, roll forward to the latest 10.0 feature band). Project files set `<TargetFramework>net10.0</TargetFramework>`.
 
@@ -45,31 +55,32 @@ Open `http://localhost:5080/`. The page shows a sample-data banner. Leave `CarPa
 
 | `CarParkData:Source` | Implementation | Use |
 | --- | --- | --- |
-| `Sql` (default) | `SqlServerOccupancySnapshotSource` | Existing Dapper / SQL Server path |
-| `Http` | `HttpOccupancySnapshotSource` | Third-party HTTP API (URL and docs are still TBD) |
+| `Sql` | `SqlServerOccupancySnapshotSource` | Existing Dapper / SQL Server path |
+| `Http` (default) | `HttpOccupancySnapshotSource` | car-park-occupancy-data-api |
 | `Sample` | `SampleOccupancySnapshotSource` | Generated local UI data |
 
 `Sql` stays compatible with the current Development preview. When `CarParkData:UseSampleSnapshots` is true, the process is Development, and `ConnectionStrings:CarParkDb` is empty, sample snapshots are still selected. A configured connection string wins over that flag. `Source=Http` does not fall back to sample data. `Source=Sample` uses sample data in any environment.
 
 ```bash
-# SQL Server (default)
+# SQL Server (optional)
 export CarParkData__Source=Sql
 export ConnectionStrings__CarParkDb="Server=localhost;Database=CarPark;User Id=app;Password=<secret>;Encrypt=True;TrustServerCertificate=True"
 
 # Local sample UI
 CarParkData__Source=Sample dotnet run --project src/CarParkOccupancy.Api
 
-# Third-party HTTP API. The provider has not published the URL yet.
+# Sibling data API (default)
 export CarParkData__Source=Http
-export CarParkData__Http__BaseUrl="https://occupancy.example/v1"
+export CarParkData__Http__BaseUrl="http://localhost:5095"
+# Only if the deployed data API requires authentication:
 export CarParkData__Http__AuthHeaderName="X-Api-Key"
 export CarParkData__Http__AuthHeaderValue="<secret>"
 ```
 
-`appsettings.json` leaves `CarParkData:Http:BaseUrl`, `AuthHeaderName`, and `AuthHeaderValue` empty. Put the base URL and the header value in environment variables or user secrets. Do not commit them.
+`appsettings.json` sets `CarParkData:Http:BaseUrl` to `http://localhost:5095` and leaves `AuthHeaderName` and `AuthHeaderValue` empty. Override the URL for deployment. Put secret header values in environment variables or user secrets; do not commit them.
 
 ```bash
-dotnet user-secrets set "CarParkData:Http:BaseUrl" "https://occupancy.example/v1" --project src/CarParkOccupancy.Api
+dotnet user-secrets set "CarParkData:Http:BaseUrl" "http://localhost:5095" --project src/CarParkOccupancy.Api
 dotnet user-secrets set "CarParkData:Http:AuthHeaderName" "X-Api-Key" --project src/CarParkOccupancy.Api
 dotnet user-secrets set "CarParkData:Http:AuthHeaderValue" "<secret>" --project src/CarParkOccupancy.Api
 ```
@@ -79,27 +90,39 @@ The HTTP client is a typed `HttpClient`. `CarParkData:Http:TimeoutSeconds` defau
 - HTTP 503 when the base URL is missing, the call times out, the host cannot be reached, or the remote API returns HTTP 502, 503, or 504.
 - HTTP 502 when the remote API returns another error status, or JSON that does not match the snapshot contract.
 
-The response does not include the auth header value. Until the provider publishes docs, the client calls:
+The response does not include the auth header value. Paths under `CarParkData:Http` are relative to `BaseUrl`:
 
-`GET {BaseUrl}/{SnapshotsPath}?carParkCode=&countingCategory=&from=&to=`
+| Setting | Default path | Use |
+| --- | --- | --- |
+| `CarParksPath` | `api/carparks` | List `{ carParkCode, carparkNumber }` objects; extract distinct codes |
+| `HistoryPathTemplate` | `api/carparks/{code}/occupancy` | Paged history |
+| `LatestPathTemplate` | `api/carparks/{code}/occupancy/latest` | Existence check using the latest snapshot array |
+| `LatestAllPath` | `api/occupancy/latest` | Data API's all-parks latest endpoint; reserved, not called by the current read-store flow |
 
-`SnapshotsPath` defaults to `occupancy-snapshots`. The body may be a JSON array, one snapshot object, or an object with a `snapshots` array (`CarParkData:Http:Json:Collection`). Property names are case-insensitive. Defaults match the stakeholder columns:
+History requests use `from` and `to` in UTC ISO-8601 round-trip format, `page` (starting at 1), `pageSize` (default 1000), `sampleEverySeconds` (default 300, downsampling the 15-second source cadence), and optional `category` (`CategoryQueryParameter`). Pages are merged until a short/empty page or `MaxPages` (default 50); reaching the limit logs a warning because history may be truncated. `SnapshotsPath` has been replaced by these endpoint-specific settings; migrate old configurations. The predictions API's own `countingCategory` parameter is unchanged.
+
+History returns `{ page, pageSize, itemCount, items: [...] }`. `OccupancySnapshotJson` uses `CarParkData:Http:Json:Collection=items` and case-insensitive names; bare arrays and single snapshot objects are still accepted:
 
 ```json
 {
-  "snapshots": [
+  "page": 1,
+  "pageSize": 1000,
+  "itemCount": 1,
+  "items": [
     {
-      "CarParkCode": "CP001",
-      "SnapshotTime": "2026-10-07T01:55:00+08:00",
-      "CountingCategory": "PrivateCar",
-      "Capacity": 200,
-      "Occupied": 140
+      "carParkCode": "CP001",
+      "snapshotTime": "2026-10-07T01:55:00Z",
+      "countingCategory": "PrivateCar",
+      "capacity": 200,
+      "occupied": 140
     }
   ]
 }
 ```
 
-Change `CarParkData:Http:Json` when the real field names arrive. `SnapshotTime` is ISO-8601. A value with no offset uses `CarParkData:SnapshotTimeIsUtc` and `Prediction:Timezone`, same as SQL Server. The car park list and the existence check use `HistoryLookbackDays` ending at the current UTC time. When `countingCategory` is omitted, rows that share a timestamp are summed.
+The data API maps DB `CarParkCode` → DTO `CarParkCode` (`carParkCode`), `Time` → `SnapshotTime` (`snapshotTime`), `Category` → `CountingCategory` (`countingCategory`), `Occupancy` → `Occupied` (`occupied`), and `Capacity` → `Capacity` (`capacity`). `SnapshotTime` is UTC; the committed `CarParkData:SnapshotTimeIsUtc=true` also treats offset-free timestamps as UTC. Set it to false explicitly when switching to SQL with local wall-clock timestamps. When category is omitted, rows that share a timestamp are summed.
+
+**No same-day live data:** history endpoints reject UTC-today-or-later `from`/`to` with HTTP 400, and latest endpoints only return rows with `Time < start of today UTC`. The client clamps history's end to yesterday `23:59:59.999Z` and returns an empty list without an API call for windows entirely today or later. The live/current 1–6-hour predictions and “current high occupancy” chart therefore use the latest available historical (pre-today) data only, not same-day live polling. Prediction horizons still start at `asOf` (default now); check `latestSnapshotTime` to understand data age.
 
 ### Connection string
 
@@ -133,7 +156,7 @@ Suggested script for a new database: `db/001_CarParkOccupancySnapshot.sql`.
 
 Stakeholder columns are `CarParkCode`, `SnapshotTime`, `CountingCategory`, and `Capacity`. `Occupied` is required as well, because the rate is `Occupied / Capacity * 100`. If the count lives in another column, change `CarParkData:Columns:Occupied`. Table name defaults to `CarParkOccupancySnapshot` (`CarParkData:Schema` + `CarParkData:TableName`). Only letters, digits, and underscores are accepted for those names.
 
-`SnapshotTime` is treated as local time in `Prediction:Timezone` (default `Asia/Hong_Kong`) unless `CarParkData:SnapshotTimeIsUtc` is true. When `countingCategory` is omitted, rows that share a timestamp are summed across categories.
+With `CarParkData:SnapshotTimeIsUtc=false`, SQL `SnapshotTime` is treated as local time in `Prediction:Timezone` (default `Asia/Hong_Kong`). The committed setting is true for the default HTTP contract; change it explicitly if your SQL data uses local timestamps. When `countingCategory` is omitted, rows that share a timestamp are summed across categories.
 
 ### Endpoints
 
@@ -245,11 +268,12 @@ The image is `net10.0` (`mcr.microsoft.com/dotnet/sdk:10.0` and `mcr.microsoft.c
 ```bash
 docker build -t carpark-occupancy-api .
 docker run --rm -p 8080:8080 \
+  -e CarParkData__Source=Sql \
   -e ConnectionStrings__CarParkDb="Server=...;Database=...;User Id=...;Password=...;Encrypt=True" \
   carpark-occupancy-api
 ```
 
-The UI is on `http://localhost:8080/`. With the default `Sql` source, data pages return HTTP 503 until the connection string is set. For the third-party API, pass `CarParkData__Source=Http`, `CarParkData__Http__BaseUrl`, and the auth header variables instead of baking them into the image. The provider URL is still TBD.
+The UI is on `http://localhost:8080/`. With an explicit `Sql` source, data pages return HTTP 503 until the connection string is set. For the default HTTP source, pass `CarParkData__Http__BaseUrl` pointing at the data API's reachable container/host address (container `localhost` is not the host) and any required auth header variables instead of baking secrets into the image.
 
 ### Data access
 
@@ -269,7 +293,7 @@ dotnet test CarParkOccupancy.slnx
 
 大約 50 個停車場，每個約有一年佔用快照。API 預測未來 1 至 6 小時、每小時一個佔用率。同一個行程會同時提供 Razor Pages 介面，介面會呼叫呢啲端點。呢個 repo 包括 solution、網頁、HTTP API，同可替換嘅預測服務。
 
-快照經 `IOccupancySnapshotSource` 讀取。預設係 SQL Server。第三方 HTTP API 之後可以提供同一批列；對方未公布網址同文件。
+快照經 `IOccupancySnapshotSource` 讀取。預設 HTTP 來源係 [car-park-occupancy-data-api](https://github.com/psl-rchan/car-park-occupancy-data-api)，網址 `http://localhost:5095`。SQL Server 同示範快照仍然可用。
 
 所有回應入面嘅佔用率都係**容量百分比，刻度 0–100**（0 代表空，100 代表滿）。欄位名係 `predictedOccupancyPercent`，唔係 0–1 分數。回應亦有 `occupancyPercentScale`，值係 `"0-100"`。
 
@@ -283,6 +307,16 @@ dotnet run --project src/CarParkOccupancy.Api
 
 開發網址係 `http://localhost:5080`。OpenAPI 文件係 `http://localhost:5080/openapi/v1.json`。
 
+先喺另一個 terminal 啟動兄弟 data API，資料庫設定跟嗰個 repo 嘅 README：
+
+```bash
+cd /workspace/car-park-occupancy-data-api
+dotnet restore
+dotnet run --project src/CarParkOccupancy.DataApi --urls http://localhost:5095
+```
+
+然後喺 `/workspace/car-park-occupancy-predictions` 用上面指令啟動預測 API。repo 嘅 HTTP 設定已經指向 5095。
+
 ### 網頁
 
 `dotnet run` 同一個 host 提供網頁同 API。網頁經 HTTP 呼叫 API，唔會自己讀 SQL。
@@ -295,10 +329,10 @@ dotnet run --project src/CarParkOccupancy.Api
 冇 SQL Server 又想撳吓介面，可以喺 Development 開示範快照。已設定連線字串，或者唔係 Development，呢個開關會被忽略：
 
 ```bash
-ASPNETCORE_ENVIRONMENT=Development CarParkData__UseSampleSnapshots=true dotnet run --project src/CarParkOccupancy.Api
+ASPNETCORE_ENVIRONMENT=Development CarParkData__Source=Sql CarParkData__UseSampleSnapshots=true dotnet run --project src/CarParkOccupancy.Api
 ```
 
-然後開 `http://localhost:5080/`。頁面會標明呢啲係示範數據。要用真實資料或者睇 503 提示，保持 `CarParkData:UseSampleSnapshots` 為 false（repo 預設）。`CarParkData:Source=Sample` 可以強制用示範數據，即使已設定連線字串。切換來源見下面「快照來源」。
+然後開 `http://localhost:5080/`。頁面會標明呢啲係示範數據。要用真實資料，保持 `CarParkData:UseSampleSnapshots` 為 false（repo 預設）。`CarParkData:Source=Sample` 可以強制用示範數據，即使已設定連線字串。預設 `Http` 來源會忽略示範開關。切換來源見下面「快照來源」。
 
 `global.json` 指定 .NET 10 SDK。各 csproj 嘅 `<TargetFramework>` 係 `net10.0`。
 
@@ -308,31 +342,32 @@ ASPNETCORE_ENVIRONMENT=Development CarParkData__UseSampleSnapshots=true dotnet r
 
 | `CarParkData:Source` | 實作 | 用途 |
 | --- | --- | --- |
-| `Sql`（預設） | `SqlServerOccupancySnapshotSource` | 現有 Dapper / SQL Server 路徑 |
-| `Http` | `HttpOccupancySnapshotSource` | 第三方 HTTP API（網址同文件未定） |
+| `Sql` | `SqlServerOccupancySnapshotSource` | 現有 Dapper / SQL Server 路徑 |
+| `Http`（預設） | `HttpOccupancySnapshotSource` | car-park-occupancy-data-api |
 | `Sample` | `SampleOccupancySnapshotSource` | 本機介面用嘅示範快照 |
 
 `Sql` 仍然兼容而家嘅 Development 預覽。`CarParkData:UseSampleSnapshots` 為 true、行程係 Development、而且 `ConnectionStrings:CarParkDb` 係空，就會繼續用示範快照。已設定連線字串就以 SQL 為準。`Source=Http` 唔會退回示範數據。`Source=Sample` 喺任何環境都用示範數據。
 
 ```bash
-# SQL Server（預設）
+# SQL Server（可選）
 export CarParkData__Source=Sql
 export ConnectionStrings__CarParkDb="Server=localhost;Database=CarPark;User Id=app;Password=<secret>;Encrypt=True;TrustServerCertificate=True"
 
 # 本機示範介面
 CarParkData__Source=Sample dotnet run --project src/CarParkOccupancy.Api
 
-# 第三方 HTTP API。對方未公布網址。
+# 兄弟 data API（預設）
 export CarParkData__Source=Http
-export CarParkData__Http__BaseUrl="https://occupancy.example/v1"
+export CarParkData__Http__BaseUrl="http://localhost:5095"
+# 只有部署嘅 data API 要驗證先設定：
 export CarParkData__Http__AuthHeaderName="X-Api-Key"
 export CarParkData__Http__AuthHeaderValue="<secret>"
 ```
 
-`appsettings.json` 入面 `CarParkData:Http:BaseUrl`、`AuthHeaderName`、`AuthHeaderValue` 留空。網址同 header 值用環境變數或者 user secrets，唔好提交。
+`appsettings.json` 入面 `CarParkData:Http:BaseUrl` 係 `http://localhost:5095`，`AuthHeaderName` 同 `AuthHeaderValue` 留空。部署時可以覆寫網址。秘密 header 值用環境變數或者 user secrets，唔好提交。
 
 ```bash
-dotnet user-secrets set "CarParkData:Http:BaseUrl" "https://occupancy.example/v1" --project src/CarParkOccupancy.Api
+dotnet user-secrets set "CarParkData:Http:BaseUrl" "http://localhost:5095" --project src/CarParkOccupancy.Api
 dotnet user-secrets set "CarParkData:Http:AuthHeaderName" "X-Api-Key" --project src/CarParkOccupancy.Api
 dotnet user-secrets set "CarParkData:Http:AuthHeaderValue" "<secret>" --project src/CarParkOccupancy.Api
 ```
@@ -342,11 +377,20 @@ HTTP 用戶端係 typed `HttpClient`。`CarParkData:Http:TimeoutSeconds` 預設 
 - HTTP 503：未設定 base URL、呼叫逾時、連唔到主機，或者遠端回 HTTP 502、503、504。
 - HTTP 502：遠端回其他錯誤狀態，或者 JSON 唔符合快照格式。
 
-回應唔會帶 auth header 值。對方文件未到之前，用戶端呼叫：
+回應唔會帶 auth header 值。`CarParkData:Http` 路徑相對於 `BaseUrl`：
 
-`GET {BaseUrl}/{SnapshotsPath}?carParkCode=&countingCategory=&from=&to=`
+| 設定 | 預設路徑 | 用途 |
+| --- | --- | --- |
+| `CarParksPath` | `api/carparks` | 讀取 `{ carParkCode, carparkNumber }` 陣列，抽取不重複代號 |
+| `HistoryPathTemplate` | `api/carparks/{code}/occupancy` | 分頁歷史快照 |
+| `LatestPathTemplate` | `api/carparks/{code}/occupancy/latest` | 用最新快照陣列檢查係咪存在 |
+| `LatestAllPath` | `api/occupancy/latest` | data API 所有場嘅最新快照端點；保留設定，目前 read-store 流程唔會呼叫 |
 
-`SnapshotsPath` 預設 `occupancy-snapshots`。主體可以係 JSON 陣列、單一快照物件，或者有 `snapshots` 陣列嘅物件（`CarParkData:Http:Json:Collection`）。屬性名不分大小寫。預設對應持份者欄位 `CarParkCode`、`SnapshotTime`、`CountingCategory`、`Capacity`、`Occupied`。真實欄位名公布之後，改 `CarParkData:Http:Json`。`SnapshotTime` 用 ISO-8601。冇時區偏移時，同 SQL Server 一樣，跟 `CarParkData:SnapshotTimeIsUtc` 同 `Prediction:Timezone`。停車場列表同「係咪存在」用 `HistoryLookbackDays`，由而家 UTC 時間倒數。冇傳 `countingCategory` 時，同一時間戳嘅列會加總。
+歷史查詢用 UTC ISO-8601 round-trip 格式嘅 `from`、`to`，以及 `page`（由 1 開始）、`pageSize`（預設 1000）、`sampleEverySeconds`（預設 300，將原本 15 秒頻率降採樣）、可選 `category`（`CategoryQueryParameter`）。分頁合併至短頁／空頁或者 `MaxPages`（預設 50）；達到上限會記錄警告，歷史可能被截斷。舊 `SnapshotsPath` 已由呢啲設定取代，舊配置要遷移。預測 API 自己嘅 `countingCategory` 參數不變。
+
+歷史回應係 `{ page, pageSize, itemCount, items: [...] }`，`CarParkData:Http:Json:Collection` 預設 `items`。`OccupancySnapshotJson` 仍然接受裸陣列同單一快照物件，欄位名不分大小寫。data API 將 DB `CarParkCode` → DTO `CarParkCode`（`carParkCode`）、`Time` → `SnapshotTime`（`snapshotTime`）、`Category` → `CountingCategory`（`countingCategory`）、`Occupancy` → `Occupied`（`occupied`）、`Capacity` → `Capacity`（`capacity`）。時間係 UTC，repo 預設 `SnapshotTimeIsUtc=true`；冇 offset 嘅時間亦當作 UTC。冇傳 category 時，同一時間戳嘅各類別會加總。
+
+**唔提供即日即時資料：**歷史端點嘅 `from`／`to` 如果係 UTC 今日或之後，會回 HTTP 400。最新端點只會回 `Time < UTC 今日開始` 嘅列。用戶端將歷史結束時間限制至昨日 `23:59:59.999Z`；完全喺今日或之後嘅窗口直接回空列表，唔呼叫 API。因此即時／目前嘅未來 1–6 小時預測，同「目前高佔用」圖，只用今日之前最新可用嘅歷史資料，唔係即日 live polling。預測時距仍然由 `asOf`（預設而家）開始，請睇 `latestSnapshotTime` 判斷資料有幾舊。
 
 ### 連線字串
 
@@ -368,7 +412,7 @@ export ConnectionStrings__CarParkDb="Server=localhost;Database=CarPark;User Id=a
 
 新庫可以用 `db/001_CarParkOccupancySnapshot.sql`。持份者提供嘅欄位係 `CarParkCode`、`SnapshotTime`、`CountingCategory`、`Capacity`。計算佔用率仲需要佔用車位數，預設欄位名 `Occupied`（`佔用 / 容量 * 100`）。如果實際欄位名唔同，改 `CarParkData:Columns`。資料表名預設 `CarParkOccupancySnapshot`，可用 `CarParkData:Schema` 同 `CarParkData:TableName` 改。名稱只接受英文字母、數字同底線。
 
-除非 `CarParkData:SnapshotTimeIsUtc` 設為 true，否則 `SnapshotTime` 當作 `Prediction:Timezone`（預設 `Asia/Hong_Kong`）嘅本地時間。冇傳 `countingCategory` 時，同一時間戳嘅各類別會加總。
+`CarParkData:SnapshotTimeIsUtc=false` 時，SQL `SnapshotTime` 當作 `Prediction:Timezone`（預設 `Asia/Hong_Kong`）嘅本地時間。repo 為預設 HTTP contract 設為 true；如果切換到用本地時間嘅 SQL 資料，請明確改為 false。冇傳 `countingCategory` 時，同一時間戳嘅各類別會加總。
 
 ### 端點
 
@@ -404,11 +448,12 @@ curl -s -X POST http://localhost:5080/api/carparks/predictions \
 ```bash
 docker build -t carpark-occupancy-api .
 docker run --rm -p 8080:8080 \
+  -e CarParkData__Source=Sql \
   -e ConnectionStrings__CarParkDb="Server=...;Database=...;User Id=...;Password=...;Encrypt=True" \
   carpark-occupancy-api
 ```
 
-網頁係 `http://localhost:8080/`。預設 `Sql` 來源未設定連線字串時，資料頁會顯示 HTTP 503 說明。第三方 API 用 `CarParkData__Source=Http`、`CarParkData__Http__BaseUrl` 同 auth header 環境變數傳入，唔好寫入映像。對方網址仍然未定。
+網頁係 `http://localhost:8080/`。明確選擇 `Sql` 來源而未設定連線字串時，資料頁會顯示 HTTP 503 說明。預設 HTTP 來源用 `CarParkData__Http__BaseUrl` 指向容器可以連到嘅 data API 地址（容器嘅 localhost 唔係宿主機），同所需 auth header 環境變數傳入，唔好將秘密寫入映像。
 
 ### 資料存取
 
