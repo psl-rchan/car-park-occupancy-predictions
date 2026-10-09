@@ -312,7 +312,7 @@ public sealed class UiPagesTests
             _sampleSnapshots = sampleSnapshots;
             _highOccupancyThreshold = highOccupancyThreshold;
             Environment.SetEnvironmentVariable("Ui__ApiTimeoutSeconds", "15");
-            Environment.SetEnvironmentVariable("CarParkData__Source", null);
+            Environment.SetEnvironmentVariable("CarParkData__Source", "Sql");
             Environment.SetEnvironmentVariable(
                 "CarParkData__UseSampleSnapshots",
                 sampleSnapshots ? "true" : null);
@@ -328,6 +328,7 @@ public sealed class UiPagesTests
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
             builder.UseEnvironment("Development");
+            builder.UseSetting("CarParkData:Source", "Sql");
             builder.UseSetting("ConnectionStrings:CarParkDb", "");
             builder.UseSetting("CarParkData:UseSampleSnapshots", _sampleSnapshots ? "true" : "false");
             builder.UseSetting("Ui:ApiTimeoutSeconds", "15");
@@ -370,6 +371,7 @@ public sealed class UiPagesTests
 
         public override async ValueTask DisposeAsync()
         {
+            Environment.SetEnvironmentVariable("CarParkData__Source", null);
             if (_sampleSnapshots)
             {
                 Environment.SetEnvironmentVariable("CarParkData__UseSampleSnapshots", null);

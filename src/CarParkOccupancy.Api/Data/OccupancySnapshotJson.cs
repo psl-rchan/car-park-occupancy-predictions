@@ -212,7 +212,7 @@ public static partial class OccupancySnapshotJson
         return new DateTimeOffset(wall, timeZone.GetUtcOffset(wall));
     }
 
-    private static bool TryFind(JsonElement element, string name, out JsonElement value)
+    internal static bool TryFind(JsonElement element, string name, out JsonElement value)
     {
         if (element.ValueKind == JsonValueKind.Object)
         {

@@ -44,12 +44,25 @@ public sealed class CarParkDataOptions
 public sealed class HttpOccupancySourceOptions
 {
     /// <summary>
-    /// Absolute http or https URL of the third-party API. Leave empty until the provider publishes it.
-    /// Set <c>CarParkData__Http__BaseUrl</c> in the environment. Do not commit a secret URL.
+    /// Absolute http or https URL of the car-park-occupancy-data-api.
     /// </summary>
-    public string BaseUrl { get; set; } = "";
+    public string BaseUrl { get; set; } = "http://localhost:5095";
 
-    public string SnapshotsPath { get; set; } = "occupancy-snapshots";
+    public string CarParksPath { get; set; } = "api/carparks";
+
+    public string HistoryPathTemplate { get; set; } = "api/carparks/{code}/occupancy";
+
+    public string LatestPathTemplate { get; set; } = "api/carparks/{code}/occupancy/latest";
+
+    public string LatestAllPath { get; set; } = "api/occupancy/latest";
+
+    public string CategoryQueryParameter { get; set; } = "category";
+
+    public int PageSize { get; set; } = 1000;
+
+    public int SampleEverySeconds { get; set; } = 300;
+
+    public int MaxPages { get; set; } = 50;
 
     public int TimeoutSeconds { get; set; } = 30;
 
@@ -83,7 +96,7 @@ public sealed class HttpSnapshotJsonNames
     /// <summary>
     /// Property that holds the snapshot array when the body is an object. A bare JSON array is also accepted.
     /// </summary>
-    public string Collection { get; set; } = "snapshots";
+    public string Collection { get; set; } = "items";
 }
 
 public sealed class CarParkColumnOptions
